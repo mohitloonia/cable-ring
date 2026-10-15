@@ -1,126 +1,108 @@
-"""Streamlit demo: pick or upload a plan -> Generate -> overlay, scores, JSON download.
+"""FastAPI backend for the React cable-ring interface."""
+from __future__ import annotations
 
-    python -m streamlit run app.py
-"""
-import json
+import base64
+import io
+import uuid
 
 import matplotlib.pyplot as plt
-import streamlit as st
+from fastapi import Body, FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 from cablering.config import DATA_PATH, Config
 from cablering.export_json import check_schema
 from cablering.input_loader import load_dataset, plan_from_index, plan_from_input_dict
-from cablering.optimizer import solve
+from cablering.optimizer import solve as solve_plan
 from cablering.visualization import draw
 
-st.set_page_config(page_title="Cable Ring Optimizer", layout="wide")
-st.title("Cable Ring Optimizer")
-st.caption("Fewest hubs first, then lowest J = L + 5X + O + 0.5B")
+app = FastAPI(title="Cable Ring Optimizer API")
+plans: dict[str, object] = {}
 
 
-@st.cache_resource(show_spinner="Loading ResPlan dataset ...")
-def dataset():
-    return load_dataset()
+class SolveRequest(BaseModel):
+    plan_key: str
+    max_nodes: int = Field(default=Config.max_nodes, ge=1, le=50)
+    node_mode: str = Field(default="optimize", pattern="^(optimize|fixed)$")
+    zone_via_other_rooms: bool = False
+    time_budget_s: int = Field(default=int(Config.time_budget_s), ge=5, le=120)
+    compare: bool = True
 
 
-FROM_DATASET = "Pick a floor plan from the dataset"
-FROM_FILE = "Upload a plan JSON file"
-
-with st.sidebar:
-    st.header("1. Choose a floor plan")
-    source = st.radio("Where does the plan come from?", [FROM_DATASET, FROM_FILE],
-                      help="The dataset (data/ResPlan.pkl) holds 17,000 floor plans, numbered 0 to 16999. "
-                           "A plan JSON file is one floor plan on its own, e.g. inputs/PLAN_00042.json.")
-    plan = None
-    if source == FROM_DATASET:
-        if DATA_PATH.exists():
-            idx = st.number_input("Plan number (0 – 16999)", 0, 16999, 0, step=1,
-                                  help="Each number is a different apartment. Try 0, 2, 42, 593.")
-            plan = plan_from_index(int(idx), dataset())
-        else:
-            st.error("data/ResPlan.pkl not found")
-    else:
-        up = st.file_uploader("Plan JSON file", type="json",
-                              help="Ready-made files are in the project's inputs/ folder.")
-        if up is not None:
-            try:
-                plan = plan_from_input_dict(json.load(up))
-            except Exception as e:
-                st.error(f"Could not read this file: {e}")
-
-    st.header("2. Solve it")
-    go = st.button("Generate", type="primary", disabled=plan is None, use_container_width=True)
-
-    with st.expander("Settings (optional)"):
-        max_nodes = st.number_input("Max nodes per hub", 1, 50, Config.max_nodes)
-        node_mode = st.selectbox("Node points", ["optimize", "fixed"],
-                                 help="optimize = we choose node points; fixed = use node points from the input JSON")
-        via_other = st.checkbox("Zones may connect through bathrooms etc.", value=False)
-        budget = st.slider("Time budget per plan (s)", 5, 120, int(Config.time_budget_s))
-        compare = st.checkbox("Also run the simple baseline (for comparison)", value=True)
-
-if plan is None:
-    st.info("Upload a plan JSON file in the sidebar (e.g. inputs/PLAN_00042.json), "
-            "or switch to picking a plan from the dataset.")
-    st.stop()
-
-cfg = Config(max_nodes=int(max_nodes), node_mode=node_mode, zone_via_other_rooms=via_other,
-             time_budget_s=float(budget))
-
-if go:
-    with st.spinner("Optimising ..."):
-        st.session_state["result"] = (plan.plan_id, solve(plan, cfg),
-                                      solve(plan, cfg, baseline=True) if compare else None)
-
-res = st.session_state.get("result")
-if not res or res[0] != plan.plan_id:
-    eligible = plan.eligible_rooms
-    st.write(f"**{plan.plan_id}**: {len(plan.rooms)} rooms, {len(eligible)} that need a node "
-             f"(living, bedroom, kitchen, storage), {sum(r.area for r in eligible):.1f} m² of eligible area.")
-    st.info("This is the empty floor plan. Press **Generate** in the sidebar to place hubs, nodes and cable.")
-    fig, ax = plt.subplots(figsize=(9, 8))
-    draw(plan, {"hubs": [], "nodes": [], "reported_metrics": {}}, ax, title=plan.plan_id)
-    st.pyplot(fig)
-    st.stop()
-
-_, out, base = res
-m, s = out["reported_metrics"], out["solver"]
-cols = st.columns(7)
-cols[0].metric("Valid", "yes" if m["valid"] else "NO")
-cols[1].metric("Hubs", m["hub_count"], help=f"lower bound {s['hub_lower_bound']}")
-cols[2].metric("Cost J", m["cost_J"],
-               delta=None if not base else round(m["cost_J"] - base["reported_metrics"]["cost_J"], 2),
-               delta_color="inverse")
-cols[3].metric("Length L (m)", m["total_length_m"])
-cols[4].metric("Crossings X", m["crossings"])
-cols[5].metric("Overlap O (m)", m["overlap_m"])
-cols[6].metric("Bends B", m["bends"])
-
-tabs = st.tabs(["Optimised", "Baseline"] if base else ["Optimised"])
-with tabs[0]:
+def _image_data(plan, output: dict, title: str | None = None) -> str:
     fig, ax = plt.subplots(figsize=(11, 9))
-    draw(plan, out, ax)
-    st.pyplot(fig)
-if base:
-    with tabs[1]:
-        fig, ax = plt.subplots(figsize=(11, 9))
-        draw(plan, base, ax, title=f"{plan.plan_id} (baseline)")
-        st.pyplot(fig)
+    draw(plan, output, ax, title=title)
+    fig.tight_layout()
+    image = io.BytesIO()
+    fig.savefig(image, format="png", dpi=120)
+    plt.close(fig)
+    return "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
 
-for v in out["validation"]["violations"]:
-    st.error(f"{v['rule']}: {v['message']}")
-for w in out["validation"]["warnings"]:
-    st.warning(w)
 
-with st.expander("Hubs"):
-    st.dataframe([{"hub": h["hub_id"], "room": h["room_id"], "rooms": ", ".join(h["assigned_rooms"]),
-                   "area m²": h["assigned_area_m2"], "sequence": " → ".join(h["closed_sequence"]),
-                   "ring m": h["ring_length_m"]} for h in out["hubs"]])
-with st.expander("Solver info"):
-    st.json(s)
+def _register_plan(plan) -> dict:
+    key = uuid.uuid4().hex
+    plans[key] = plan
+    eligible = plan.eligible_rooms
+    return {
+        "plan_key": key,
+        "plan_id": plan.plan_id,
+        "room_count": len(plan.rooms),
+        "eligible_count": len(eligible),
+        "eligible_area_m2": sum(room.area for room in eligible),
+        "image": _image_data(plan, {"hubs": [], "nodes": [], "reported_metrics": {}}),
+    }
 
-st.subheader("Output file")
-st.write("This JSON is the submission file for this plan: hubs, nodes, visiting order and every cable polyline.")
-payload = json.dumps(check_schema(out).model_dump(by_alias=True), indent=2)
-st.download_button("Download output JSON", payload, file_name=f"{plan.plan_id}_output.json",
-                   mime="application/json", type="primary")
+
+@app.get("/api/status")
+def status() -> dict:
+    return {"dataset_available": DATA_PATH.exists()}
+
+
+@app.post("/api/plans/index/{index}")
+def dataset_plan(index: int) -> dict:
+    if index < 0 or index > 16999:
+        raise HTTPException(status_code=400, detail="Plan number must be between 0 and 16999.")
+    if not DATA_PATH.exists():
+        raise HTTPException(status_code=404, detail="data/ResPlan.pkl not found")
+    try:
+        return _register_plan(plan_from_index(index, load_dataset()))
+    except (IndexError, ValueError, KeyError) as error:
+        raise HTTPException(status_code=400, detail=f"Could not load plan: {error}") from error
+
+
+@app.post("/api/plans/upload")
+def upload_plan(payload: dict = Body(...)) -> dict:
+    try:
+        plan = plan_from_input_dict(payload)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Could not read this file: {error}") from error
+    return _register_plan(plan)
+
+
+@app.post("/api/solve")
+def solve(request: SolveRequest) -> dict:
+    plan = plans.get(request.plan_key)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Plan session expired. Load the plan again.")
+
+    cfg = Config(
+        max_nodes=request.max_nodes,
+        node_mode=request.node_mode,
+        zone_via_other_rooms=request.zone_via_other_rooms,
+        time_budget_s=float(request.time_budget_s),
+    )
+    try:
+        output = solve_plan(plan, cfg)
+        baseline = solve_plan(plan, cfg, baseline=True) if request.compare else None
+        output = check_schema(output).model_dump(by_alias=True)
+        if baseline is not None:
+            baseline = check_schema(baseline).model_dump(by_alias=True)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Optimisation failed: {error}") from error
+
+    return {
+        "output": output,
+        "baseline": baseline,
+        "optimized_image": _image_data(plan, output),
+        "baseline_image": _image_data(plan, baseline, f"{plan.plan_id} (baseline)") if baseline else None,
+        "output_json": check_schema(output).model_dump_json(by_alias=True, indent=2),
+    }
