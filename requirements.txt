@@ -5,4 +5,5 @@ networkx>=3.0
 matplotlib>=3.8
 pydantic>=2.6
 streamlit>=1.40
+plotly>=5.0
 pytest>=8.0

@@ -4,7 +4,8 @@
     python batch.py --split test --count 200 --baseline    # test split, also run the baseline
     python batch.py --inputs inputs                        # every *.json in a folder
 
-Writes outputs/batch/<plan_id>.json (+ .png with --png) and outputs/batch/summary.csv.
+Writes outputs/batch/<plan_id>.json (+ .png with --png, + _3d.html with --html3d)
+and outputs/batch/summary.csv.
 """
 from __future__ import annotations
 
@@ -39,6 +40,9 @@ def run_one(job: dict) -> dict:
         if job["png"]:
             from cablering.visualization import save
             save(plan, out, out_dir / f"{plan.plan_id}.png")
+        if job["html3d"]:
+            from cablering.view3d import save_html
+            save_html(plan, out, out_dir / f"{plan.plan_id}_3d.html")
         m, s = out["reported_metrics"], out["solver"]
         row.update(valid=m["valid"], hubs=m["hub_count"], hub_lower_bound=s["hub_lower_bound"],
                    J=m["cost_J"], L=m["total_length_m"], X=m["crossings"], O=m["overlap_m"], B=m["bends"],
@@ -61,11 +65,13 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     ap.add_argument("--baseline", action="store_true", help="also solve with the simple baseline")
     ap.add_argument("--png", action="store_true", help="save an overlay PNG per plan")
+    ap.add_argument("--html3d", action="store_true", help="save an interactive 3D HTML per plan (~5 MB each)")
     ap.add_argument("--out", default=str(OUTPUT_DIR / "batch"))
     args = ap.parse_args()
 
     cfg = Config().to_dict()
-    common = {"cfg": cfg, "out_dir": args.out, "png": args.png, "baseline": args.baseline}
+    common = {"cfg": cfg, "out_dir": args.out, "png": args.png, "html3d": args.html3d,
+              "baseline": args.baseline}
     if args.inputs:
         jobs = [{**common, "path": str(p)} for p in sorted(Path(args.inputs).glob("*.json"))]
     else:

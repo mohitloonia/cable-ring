@@ -11,6 +11,7 @@ from cablering.config import DATA_PATH, Config
 from cablering.export_json import check_schema
 from cablering.input_loader import load_dataset, plan_from_index, plan_from_input_dict
 from cablering.optimizer import solve
+from cablering.view3d import build_figure
 from cablering.visualization import draw
 
 st.set_page_config(page_title="Cable Ring Optimizer", layout="wide")
@@ -49,7 +50,7 @@ with st.sidebar:
                 st.error(f"Could not read this file: {e}")
 
     st.header("2. Solve it")
-    go = st.button("Generate", type="primary", disabled=plan is None, use_container_width=True)
+    go = st.button("Generate", type="primary", disabled=plan is None, width="stretch")
 
     with st.expander("Settings (optional)"):
         max_nodes = st.number_input("Max nodes per hub", 1, 50, Config.max_nodes)
@@ -80,7 +81,7 @@ if not res or res[0] != plan.plan_id:
     st.info("This is the empty floor plan. Press **Generate** in the sidebar to place hubs, nodes and cable.")
     fig, ax = plt.subplots(figsize=(9, 8))
     draw(plan, {"hubs": [], "nodes": [], "reported_metrics": {}}, ax, title=plan.plan_id)
-    st.pyplot(fig)
+    st.pyplot(fig, alt=f"Empty floor plan of {plan.plan_id}")
     st.stop()
 
 _, out, base = res
@@ -96,16 +97,34 @@ cols[4].metric("Crossings X", m["crossings"])
 cols[5].metric("Overlap O (m)", m["overlap_m"])
 cols[6].metric("Bends B", m["bends"])
 
-tabs = st.tabs(["Optimised", "Baseline"] if base else ["Optimised"])
-with tabs[0]:
+VIEW_3D, VIEW_2D, VIEW_BASE = ":material/view_in_ar: 3D view", ":material/map: 2D plan", ":material/compare: Baseline (2D)"
+view = st.segmented_control("View", [VIEW_3D, VIEW_2D] + ([VIEW_BASE] if base else []),
+                            default=VIEW_3D, required=True, key="view")
+
+if view == VIEW_3D:
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        wall_h = st.slider("Wall height (m)", 0.6, 3.0, 2.7, 0.1,
+                           help="Lower the walls for a doll's-house view; the cable stays just under the ceiling.")
+        wall_op = st.slider("Wall see-through", 0.1, 1.0, 0.7, 0.05, help="1 = solid walls")
+        labels = st.toggle("Labels", value=True)
+    fig3d = build_figure(plan, out, wall_h=wall_h, wall_opacity=wall_op, show_labels=labels)
+    st.plotly_chart(fig3d, config={"displaylogo": False},
+                    alt=f"3D model of {plan.plan_id} with walls, hub zones and cable rings")
+    st.caption("Drag to rotate, scroll to zoom, right-drag to pan. Press **▶ Trace the cable** to watch "
+               "each ring run from its hub through every node and back. Hubs are drawn as wall panels "
+               "with a riser to the ceiling cable (presentation only; scoring uses the 2D polylines).")
+    st.download_button(":material/download: Download this 3D view (HTML)",
+                       fig3d.to_html(include_plotlyjs=True, full_html=True, config={"displaylogo": False}),
+                       file_name=f"{plan.plan_id}_3d.html", mime="text/html",
+                       help="A single file that opens in any browser, offline. Good for the presentation.")
+elif view == VIEW_2D:
     fig, ax = plt.subplots(figsize=(11, 9))
     draw(plan, out, ax)
-    st.pyplot(fig)
-if base:
-    with tabs[1]:
-        fig, ax = plt.subplots(figsize=(11, 9))
-        draw(plan, base, ax, title=f"{plan.plan_id} (baseline)")
-        st.pyplot(fig)
+    st.pyplot(fig, alt=f"2D floor plan of {plan.plan_id} with hub zones and cable rings")
+else:
+    fig, ax = plt.subplots(figsize=(11, 9))
+    draw(plan, base, ax, title=f"{plan.plan_id} (baseline)")
+    st.pyplot(fig, alt=f"Baseline design for {plan.plan_id}")
 
 for v in out["validation"]["violations"]:
     st.error(f"{v['rule']}: {v['message']}")

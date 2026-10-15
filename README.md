@@ -42,13 +42,27 @@ cable-ring/
 │   ├── metrics.py         L, X, O, B, J from polylines only (1 mm tolerance)
 │   ├── validation.py      every hard rule, independent of the solver
 │   ├── export_json.py     slide-8 output schema (Pydantic)
-│   └── visualization.py   overlay: zones, hubs, nodes, order, rings, violations in red
+│   ├── visualization.py   overlay: zones, hubs, nodes, order, rings, violations in red
+│   └── view3d.py          interactive 3D model (Plotly) + standalone HTML export
 ├── tools/make_inputs.py   dataset plans → per-plan input JSON files
 ├── tests/                 metric examples from slide 7, validator, end-to-end
 ├── data/                  ResPlan.pkl, split.json (not in git)
 ├── inputs/                per-plan input JSON
 └── outputs/               results (not in git)
 ```
+
+## 3D view
+
+In the app, pick **3D view** after Generate: walls raised to room height (doors are
+openings with a lintel, windows have glass), floors coloured by hub zone, every ring at
+ceiling height with visiting-order numbers, hubs as wall panels with a riser to the
+cable. Sliders lower the walls (doll's-house view) or make them see-through; **▶ Trace the
+cable** animates a pulse round every ring. **Download this 3D view (HTML)** saves a single
+file that opens offline in any browser, for the presentation.
+
+From the command line: `python start_here.py 42` also writes `outputs/PLAN_00042_3d.html`,
+and `python batch.py --count 10 --html3d` writes one per plan. Heights are presentation
+only; scoring uses the 2D polylines. Code: `cablering/view3d.py`.
 
 ## How the engine works
 
