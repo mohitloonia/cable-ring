@@ -49,6 +49,12 @@ def main() -> None:
     js = write_output(out, OUTPUT_DIR / f"{plan.plan_id}.json")
     png = save(plan, out, OUTPUT_DIR / f"{plan.plan_id}.png")
     print("wrote", js, "and", png)
+    try:
+        from cablering.view3d import save_html
+        html = save_html(plan, out, OUTPUT_DIR / f"{plan.plan_id}_3d.html")
+        print("wrote", html, "(3D view: open it in any browser)")
+    except ImportError:
+        print("plotly not installed: skipping the 3D view (pip install plotly)")
 
 
 if __name__ == "__main__":
