@@ -6,17 +6,23 @@ import io
 import uuid
 
 import matplotlib.pyplot as plt
-from fastapi import Body, FastAPI, HTTPException
+import plotly
+from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
+from plotly.offline import get_plotlyjs
 
 from cablering.config import DATA_PATH, Config
 from cablering.export_json import check_schema
 from cablering.input_loader import load_dataset, plan_from_index, plan_from_input_dict
 from cablering.optimizer import solve as solve_plan
 from cablering.visualization import draw
+from cablering.view3d import build_figure, standalone_html
 
 app = FastAPI(title="Cable Ring Optimizer API")
 plans: dict[str, object] = {}
+results: dict[str, dict] = {}
+PLOTLY_ASSET_URL = f"/api/assets/plotly-{plotly.__version__}.js"
 
 
 class SolveRequest(BaseModel):
@@ -57,6 +63,15 @@ def status() -> dict:
     return {"dataset_available": DATA_PATH.exists()}
 
 
+@app.get(PLOTLY_ASSET_URL)
+def plotly_asset() -> Response:
+    return Response(
+        content=get_plotlyjs(),
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
 @app.post("/api/plans/index/{index}")
 def dataset_plan(index: int) -> dict:
     if index < 0 or index > 16999:
@@ -78,6 +93,34 @@ def upload_plan(payload: dict = Body(...)) -> dict:
     return _register_plan(plan)
 
 
+@app.get("/api/plans/{plan_key}/3d", response_class=HTMLResponse)
+def plan_3d(
+    plan_key: str,
+    baseline: bool = False,
+    wall_height: float = Query(default=2.7, ge=1.8, le=4.0),
+    wall_transparency: int = Query(default=50, ge=0, le=100),
+) -> HTMLResponse:
+    plan = plans.get(plan_key)
+    result = results.get(plan_key)
+    if plan is None or result is None:
+        raise HTTPException(status_code=404, detail="Solve this plan before opening its 3D view.")
+    output = result["baseline"] if baseline else result["output"]
+    if output is None:
+        raise HTTPException(status_code=404, detail="Baseline was not generated for this plan.")
+    figure = build_figure(
+        plan,
+        output,
+        wall_h=wall_height,
+        wall_opacity=1 - wall_transparency / 100,
+        height=None,
+    )
+    return HTMLResponse(standalone_html(
+        figure,
+        include_plotlyjs=PLOTLY_ASSET_URL,
+        notify_parent=True,
+    ))
+
+
 @app.post("/api/solve")
 def solve(request: SolveRequest) -> dict:
     plan = plans.get(request.plan_key)
@@ -96,6 +139,7 @@ def solve(request: SolveRequest) -> dict:
         output = check_schema(output).model_dump(by_alias=True)
         if baseline is not None:
             baseline = check_schema(baseline).model_dump(by_alias=True)
+        results[request.plan_key] = {"output": output, "baseline": baseline}
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Optimisation failed: {error}") from error
 
@@ -105,4 +149,5 @@ def solve(request: SolveRequest) -> dict:
         "optimized_image": _image_data(plan, output),
         "baseline_image": _image_data(plan, baseline, f"{plan.plan_id} (baseline)") if baseline else None,
         "output_json": check_schema(output).model_dump_json(by_alias=True, indent=2),
+        "plotly_asset_url": PLOTLY_ASSET_URL,
     }

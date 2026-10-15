@@ -295,10 +295,16 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.5
     return fig
 
 
-def standalone_html(fig: go.Figure) -> str:
+def standalone_html(fig: go.Figure, include_plotlyjs: bool | str = True,
+                   notify_parent: bool = False) -> str:
     """The figure as one HTML page on a dark background (plotly.js embedded: works offline)."""
-    html = fig.to_html(include_plotlyjs=True, full_html=True, config={"displaylogo": False},
-                       default_height="100vh")
+    post_script = (
+        'window.__cableRing3DReady = true; '
+        'window.parent.postMessage({type: "cable-ring-3d-ready"}, "*");'
+        if notify_parent else None
+    )
+    html = fig.to_html(include_plotlyjs=include_plotlyjs, full_html=True, config={"displaylogo": False},
+                       default_height="100vh", post_script=post_script)
     style = f"<style>html,body{{margin:0;background:{PAGE_DARK};}}</style>"
     return html.replace("<head>", "<head>" + style, 1)
 

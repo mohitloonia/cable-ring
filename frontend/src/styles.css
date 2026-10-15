@@ -70,8 +70,20 @@ details > summary { cursor: pointer; list-style-position: inside; }
 .tabs button { position: relative; padding: .65rem .1rem; border: 0; background: none; color: #626570; }
 .tabs button.active { color: var(--accent); font-weight: 600; }
 .tabs button.active::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--accent); content: ""; }
+.view-switch { display: flex; gap: .25rem; width: max-content; margin-top: .6rem; padding: .2rem; border-radius: .35rem; background: #f0f2f6; }
+.view-switch button { padding: .4rem .85rem; border: 0; border-radius: .25rem; background: transparent; color: #626570; }
+.view-switch button.active { background: #fff; color: var(--accent); box-shadow: 0 1px 3px #0002; font-weight: 600; }
+.scene-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem 1.5rem; max-width: 800px; margin: .85rem 0; }
+.scene-control { display: grid; grid-template-columns: auto minmax(5rem, 1fr) 3.5rem; align-items: center; gap: .65rem; font-size: .88rem; }
+.scene-control input { min-width: 0; accent-color: var(--accent); }
+.scene-control output { text-align: right; font-size: .84rem; }
+.scene-stage { position: relative; width: 100%; }
+.scene-stage.preload { position: fixed; top: 0; left: -200vw; z-index: -1; width: min(100vw, 1100px); height: min(76vh, 760px); min-height: 440px; opacity: .01; pointer-events: none; }
+.scene-stage.preload .plot-3d { width: 100%; height: 100%; min-height: 0; margin: 0; }
+.scene-loading { position: absolute; inset: 1.2rem 0 1.5rem; z-index: 1; display: grid; place-items: center; border-radius: .35rem; background: #0e1117; color: #e5e7eb; }
 .plot-frame { width: 100%; margin: 1.2rem 0 1.5rem; overflow: auto; text-align: center; }
 .plot-frame img { display: block; width: min(100%, 1050px); height: auto; margin: 0 auto; }
+.plot-3d { display: block; width: 100%; height: min(76vh, 760px); min-height: 440px; margin: 1.2rem 0 1.5rem; border: 0; border-radius: .35rem; background: #0e1117; }
 .validation-notice { margin: .5rem 0; }
 .output-details { margin-top: 1rem; }
 .output-details > summary { padding: .85rem 0; font-weight: 550; }
@@ -95,4 +107,7 @@ pre { overflow: auto; padding: 1rem; border-radius: .3rem; background: #f6f7f9; 
   .main-content { margin-left: 0; padding: 1.4rem 1rem 2rem; }
   .page-heading h1 { font-size: 1.75rem; }
   .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem .5rem; }
+  .plot-3d { height: 70vh; min-height: 380px; }
+  .scene-stage.preload { height: 70vh; min-height: 380px; }
+  .scene-controls { grid-template-columns: minmax(0, 1fr); }
 }

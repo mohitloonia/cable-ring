@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -28,7 +28,13 @@ function App() {
   const [planIndex, setPlanIndex] = useState("0");
   const [plan, setPlan] = useState(null);
   const [result, setResult] = useState(null);
+  const sceneFrame = useRef(null);
   const [activeTab, setActiveTab] = useState("optimized");
+  const [displayMode, setDisplayMode] = useState("2d");
+  const [readySceneUrl, setReadySceneUrl] = useState("");
+  const [wallHeight, setWallHeight] = useState(2.7);
+  const [wallTransparency, setWallTransparency] = useState(50);
+  const [sceneSettings, setSceneSettings] = useState({ wallHeight: 2.7, wallTransparency: 50 });
   const [operation, setOperation] = useState("");
   const [error, setError] = useState("");
   const [settings, setSettings] = useState({
@@ -38,6 +44,9 @@ function App() {
     time_budget_s: 30,
     compare: true,
   });
+  const sceneUrl = result && plan
+    ? `/api/plans/${plan.plan_key}/3d?wall_height=${sceneSettings.wallHeight}&wall_transparency=${sceneSettings.wallTransparency}${activeTab === "baseline" ? "&baseline=true" : ""}`
+    : "";
 
   useEffect(() => {
     api("/api/status")
@@ -49,6 +58,36 @@ function App() {
       })
       .catch((reason) => setError(reason.message));
   }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSceneSettings({ wallHeight, wallTransparency }), 300);
+    return () => clearTimeout(timer);
+  }, [wallHeight, wallTransparency]);
+
+  useEffect(() => {
+    if (!result?.plotly_asset_url) return undefined;
+    const prefetch = document.createElement("link");
+    prefetch.rel = "prefetch";
+    prefetch.as = "script";
+    prefetch.href = result.plotly_asset_url;
+    document.head.append(prefetch);
+    return () => prefetch.remove();
+  }, [result?.plotly_asset_url]);
+
+  useEffect(() => {
+    if (!sceneUrl) {
+      setReadySceneUrl("");
+      return undefined;
+    }
+    setReadySceneUrl("");
+    const timer = setInterval(() => {
+      if (sceneFrame.current?.contentWindow?.__cableRing3DReady) {
+        setReadySceneUrl(sceneUrl);
+        clearInterval(timer);
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, [sceneUrl]);
 
   async function loadIndex(index) {
     setPlanIndex(String(index));
@@ -113,6 +152,7 @@ function App() {
         body: JSON.stringify({ plan_key: plan.plan_key, ...settings }),
       }));
       setActiveTab("optimized");
+      setDisplayMode("2d");
     } catch (reason) {
       setError(reason.message);
     } finally {
@@ -259,10 +299,44 @@ function App() {
                   {baseline && <button role="tab" aria-selected={activeTab === "baseline"} className={activeTab === "baseline" ? "active" : ""}
                     onClick={() => setActiveTab("baseline")}>Baseline</button>}
                 </div>
+                <div className="view-switch" role="tablist" aria-label="Visualization">
+                  <button role="tab" aria-selected={displayMode === "2d"} className={displayMode === "2d" ? "active" : ""}
+                    onClick={() => setDisplayMode("2d")}>2D</button>
+                  <button role="tab" aria-selected={displayMode === "3d"} className={displayMode === "3d" ? "active" : ""}
+                    onClick={() => setDisplayMode("3d")}>3D</button>
+                </div>
+                {displayMode === "3d" && (
+                  <div className="scene-controls">
+                    <label className="scene-control" htmlFor="wall-height">
+                      <span>Wall height</span>
+                      <input id="wall-height" type="range" min="1.8" max="4" step="0.1"
+                        value={wallHeight} onChange={(event) => setWallHeight(Number(event.target.value))} />
+                      <output>{wallHeight.toFixed(1)} m</output>
+                    </label>
+                    <label className="scene-control" htmlFor="wall-transparency">
+                      <span>Wall transparency</span>
+                      <input id="wall-transparency" type="range" min="0" max="100" step="5"
+                        value={wallTransparency}
+                        onChange={(event) => setWallTransparency(Number(event.target.value))} />
+                      <output>{wallTransparency}%</output>
+                    </label>
+                  </div>
+                )}
               </>
             )}
 
-            {shownImage && <div className="plot-frame"><img src={shownImage} alt={`${plan.plan_id} floor plan`} /></div>}
+            {result && sceneUrl && (
+              <div className={`scene-stage ${displayMode === "3d" ? "active" : "preload"}`}>
+                {displayMode === "3d" && readySceneUrl !== sceneUrl && (
+                  <div className="scene-loading" role="status">Preparing 3D view ...</div>
+                )}
+                <iframe ref={sceneFrame} key={sceneUrl} className="plot-3d" title="Interactive 3D floor plan"
+                  src={sceneUrl}
+                  aria-hidden={displayMode !== "3d"} tabIndex={displayMode === "3d" ? 0 : -1} />
+              </div>
+            )}
+            {displayMode === "2d" && shownImage &&
+              <div className="plot-frame"><img src={shownImage} alt={`${plan.plan_id} floor plan`} /></div>}
 
             {output && (
               <>
