@@ -11,7 +11,7 @@ from cablering.config import DATA_PATH, Config
 from cablering.export_json import check_schema
 from cablering.input_loader import load_dataset, plan_from_index, plan_from_input_dict
 from cablering.optimizer import solve
-from cablering.view3d import build_figure
+from cablering.view3d import build_figure, standalone_html
 from cablering.visualization import draw
 
 st.set_page_config(page_title="Cable Ring Optimizer", layout="wide")
@@ -105,16 +105,16 @@ if view == VIEW_3D:
     with st.container(horizontal=True, vertical_alignment="bottom"):
         wall_h = st.slider("Wall height (m)", 0.6, 3.0, 2.7, 0.1,
                            help="Lower the walls for a doll's-house view; the cable stays just under the ceiling.")
-        wall_op = st.slider("Wall see-through", 0.1, 1.0, 0.7, 0.05, help="1 = solid walls")
+        wall_op = st.slider("Wall see-through", 0.1, 1.0, 0.5, 0.05, help="1 = solid walls")
         labels = st.toggle("Labels", value=True)
     fig3d = build_figure(plan, out, wall_h=wall_h, wall_opacity=wall_op, show_labels=labels)
-    st.plotly_chart(fig3d, config={"displaylogo": False},
+    st.plotly_chart(fig3d, config={"displaylogo": False}, theme=None,
                     alt=f"3D model of {plan.plan_id} with walls, hub zones and cable rings")
     st.caption("Drag to rotate, scroll to zoom, right-drag to pan. Press **▶ Trace the cable** to watch "
                "each ring run from its hub through every node and back. Hubs are drawn as wall panels "
                "with a riser to the ceiling cable (presentation only; scoring uses the 2D polylines).")
     st.download_button(":material/download: Download this 3D view (HTML)",
-                       fig3d.to_html(include_plotlyjs=True, full_html=True, config={"displaylogo": False}),
+                       standalone_html(fig3d),
                        file_name=f"{plan.plan_id}_3d.html", mime="text/html",
                        help="A single file that opens in any browser, offline. Good for the presentation.")
 elif view == VIEW_2D:

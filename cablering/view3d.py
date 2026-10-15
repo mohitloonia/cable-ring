@@ -15,6 +15,7 @@ polyline) is exactly the 2D output.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
@@ -23,13 +24,24 @@ import shapely
 from .geometry import parts
 from .visualization import ZONE_COLORS
 
-FLOOR_EXCLUDED = "#cfcfcf"
-FLOOR_OUTSIDE = "#cfe8bf"
-WALL_COLOR = "#eceae4"
-WALL_EDGE = "#6b6b6b"
-GLASS = "#7cc4ff"
-DOOR_FRAME = "#d18b2c"
-ENTRANCE = "#c1121f"
+FLOOR_EXCLUDED = "#e4e4e4"
+FLOOR_OUTSIDE = "#dcebd2"
+WALL_COLOR = "#d9d6cf"
+WALL_EDGE = "#8a8a8a"
+GLASS = "#9fd3ff"
+DOOR_FRAME = "#f2b25c"
+ENTRANCE = "#e05a64"
+LABEL = "#1f2937"          # hub / node labels (sit over the light floors)
+FLOOR_TINT = 0.76         # floors are zone colours mixed 76% with white, like the 2D view
+PAGE_DARK = "#0e1117"      # Streamlit's dark background, used for exported HTML
+
+
+def tint(hex_color: str, amount: float = FLOOR_TINT) -> str:
+    """Mix a colour with white: amount 0 = unchanged, 1 = white."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    mix = lambda c: round(c + (255 - c) * amount)
+    return f"#{mix(r):02x}{mix(g):02x}{mix(b):02x}"
 
 
 # --------------------------------------------------------------------------- #
@@ -121,8 +133,8 @@ def _resample(points, step: float):
 # --------------------------------------------------------------------------- #
 # Scene
 # --------------------------------------------------------------------------- #
-def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.7,
-                 show_labels: bool = True, animate: bool = True, height: int = 720) -> go.Figure:
+def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.5,
+                 show_labels: bool = True, animate: bool = True, height: int | None = 720) -> go.Figure:
     door_h = min(2.1, wall_h - 0.1)
     sill_h, glass_top = min(0.9, wall_h * 0.33), min(2.1, wall_h - 0.1)
     cable_h = wall_h - 0.12
@@ -133,15 +145,16 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.7
     traces: list = []
 
     # ---- floor ------------------------------------------------------------
+    # light tints (like the 2D view) so the strong colours belong to cable, hubs and nodes
     floors: dict[str, MeshBuilder] = {}
     for r in plan.rooms:
-        color = ZONE_COLORS[zone_of[r.id] % len(ZONE_COLORS)] if r.id in zone_of else FLOOR_EXCLUDED
+        color = tint(ZONE_COLORS[zone_of[r.id] % len(ZONE_COLORS)]) if r.id in zone_of else FLOOR_EXCLUDED
         floors.setdefault(color, MeshBuilder()).flat(r.poly, 0.0)
     outside = MeshBuilder()
     outside.flat(plan.outside, -0.02)
     traces.append(outside.trace(FLOOR_OUTSIDE, "outside"))
     for color, mb in floors.items():
-        traces.append(mb.trace(color, "floor", opacity=0.85))
+        traces.append(mb.trace(color, "floor"))
 
     # ---- walls, doors, windows -------------------------------------------
     walls = MeshBuilder()
@@ -180,7 +193,7 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.7
             ring += pl if not ring else pl[1:]
         ring_paths.append((color, ring))
         traces.append(go.Scatter3d(
-            x=xs, y=ys, z=zs, mode="lines", line=dict(color=color, width=7),
+            x=xs, y=ys, z=zs, mode="lines", line=dict(color=color, width=8),
             name=f"{h['hub_id']} ring · {h['ring_length_m']:.1f} m", hoverinfo="name"))
         # visiting order numbers
         mids = []
@@ -201,8 +214,9 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.7
                                    hoverinfo="skip", showlegend=False))
         traces.append(go.Scatter3d(
             x=[hx], y=[hy], z=[hub_h], mode="markers+text" if show_labels else "markers",
-            marker=dict(symbol="diamond", size=11, color=color, line=dict(color="black", width=2)),
-            text=[h["hub_id"]], textposition="top center", textfont=dict(size=14, color="black"),
+            marker=dict(symbol="diamond", size=12, color=color, line=dict(color="white", width=2)),
+            text=[f"<b>{h['hub_id']}</b>"], textposition="top center",
+            textfont=dict(size=15, color=LABEL),
             name=f"{h['hub_id']} hub", hovertext=(f"{h['hub_id']} · room {h['room_id']} · "
                                                   f"{h['assigned_area_m2']:.1f} m² · "
                                                   f"{len(h['assigned_nodes'])} nodes"),
@@ -217,7 +231,7 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.7
             z=[cable_h] * len(nodes), mode="markers+text" if show_labels else "markers",
             marker=dict(size=7, color="white", line=dict(color=cols, width=4)),
             text=[n["node_id"] for n in nodes], textposition="bottom center",
-            textfont=dict(size=12, color="black"), name="nodes",
+            textfont=dict(size=13, color=LABEL), name="nodes",
             hovertext=[f"{n['node_id']} · room {n['room_id']}" for n in nodes], hoverinfo="text",
             showlegend=False))
 
@@ -227,7 +241,7 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.7
         traces.append(go.Scatter3d(
             x=[p.x for p, _ in pts], y=[p.y for p, _ in pts], z=[0.05] * len(pts), mode="text",
             text=[f"{r.id} {r.type}<br>{r.area:.1f} m²" for _, r in pts],
-            textfont=dict(size=10, color="#333"), hoverinfo="skip", showlegend=False))
+            textfont=dict(size=10, color="#6b7280"), hoverinfo="skip", showlegend=False))
 
     traces = [t for t in traces if t is not None]
 
@@ -256,19 +270,21 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.7
         height=height,
         margin=dict(l=0, r=0, t=10, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(x=0.01, y=0.98, bgcolor="rgba(255,255,255,0.75)", font=dict(color="black")),
+        legend=dict(x=0.01, y=0.98, bgcolor="rgba(28,32,42,0.85)", bordercolor="rgba(255,255,255,0.15)",
+                    borderwidth=1, font=dict(color="#e5e7eb")),
         scene=dict(
             xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False),
             aspectmode="manual",
             aspectratio=dict(x=(maxx - minx) / span, y=(maxy - miny) / span, z=wall_h * 1.6 / span),
             camera=dict(eye=dict(x=0.55, y=-0.85, z=0.75), up=dict(x=0, y=0, z=1)),
-            bgcolor="#f7f7f5",
+            bgcolor="rgba(0,0,0,0)",                # transparent: blends with the page
         ),
     )
     if frames:
         fig.update_layout(updatemenus=[dict(
             type="buttons", showactive=False, x=0.01, y=0.02, xanchor="left", yanchor="bottom",
-            bgcolor="white", font=dict(color="black"),
+            bgcolor="rgba(28,32,42,0.9)", bordercolor="rgba(255,255,255,0.2)",
+            font=dict(color="#e5e7eb"),
             buttons=[
                 dict(label="▶ Trace the cable", method="animate",
                      args=[None, dict(frame=dict(duration=40, redraw=True), fromcurrent=True,
@@ -279,9 +295,16 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.7
     return fig
 
 
+def standalone_html(fig: go.Figure) -> str:
+    """The figure as one HTML page on a dark background (plotly.js embedded: works offline)."""
+    html = fig.to_html(include_plotlyjs=True, full_html=True, config={"displaylogo": False},
+                       default_height="100vh")
+    style = f"<style>html,body{{margin:0;background:{PAGE_DARK};}}</style>"
+    return html.replace("<head>", "<head>" + style, 1)
+
+
 def save_html(plan, out: dict, path, **kw):
     """Standalone HTML file (works offline in any browser, no Python needed)."""
-    fig = build_figure(plan, out, height=900, **kw)
-    fig.write_html(str(path), include_plotlyjs=True, full_html=True,     # embedded: works offline
-                   config={"displaylogo": False})
+    fig = build_figure(plan, out, height=None, **kw)
+    Path(path).write_text(standalone_html(fig), encoding="utf-8")
     return path
