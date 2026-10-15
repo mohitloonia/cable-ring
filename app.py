@@ -33,7 +33,7 @@ def _image_data(plan, output: dict, title: str | None = None) -> str:
     draw(plan, output, ax, title=title)
     fig.tight_layout()
     image = io.BytesIO()
-    fig.savefig(image, format="png", dpi=120)
+    fig.savefig(image, format="png", dpi=120, bbox_inches="tight", pad_inches=0.08)
     plt.close(fig)
     return "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
 
