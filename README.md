@@ -15,7 +15,13 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 REM put ResPlan.pkl (from HACKHIVE.zip) into data\
 python start_here.py               REM solves plan 0, writes outputs\PLAN_00000.json/.png
-python -m streamlit run app.py     REM demo app
+REM Terminal 1, from the project root:
+python -m uvicorn app:app --reload
+REM Terminal 2, from the project root:
+cd frontend
+npm install
+npm run dev                         REM React app at http://localhost:5173
+REM Run tests in another terminal from the project root:
 python -m pytest -q                REM tests
 python batch.py --split test --count 300 --baseline   REM benchmark
 ```
@@ -24,7 +30,8 @@ python batch.py --split test --count 300 --baseline   REM benchmark
 
 ```
 cable-ring/
-├── app.py                 Streamlit demo: pick/upload plan → Generate → overlay, scores, JSON
+├── app.py                 FastAPI endpoints for plans, solving and floor-plan previews
+├── frontend/              React + Vite interface
 ├── batch.py               parallel benchmark over many plans → outputs/batch/summary.csv
 ├── start_here.py          first-run check: libraries, dataset, one solved plan
 ├── requirements.txt

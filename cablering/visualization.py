@@ -92,6 +92,7 @@ def draw(plan, out: dict, ax=None, title: str | None = None, show_room_labels: b
         Line2D([], [], color="#4aa8ff", lw=6, label="window"),
         Line2D([], [], marker="x", ls="", ms=10, color="red", mew=3, label="violation"),
     ], loc="upper left", bbox_to_anchor=(1.0, 1.0), fontsize=8, frameon=False)
+    ax.margins(y=0.015)
     ax.set_aspect("equal")
     ax.tick_params(labelsize=7)
     return ax
