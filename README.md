@@ -1,0 +1,120 @@
+# Cable Ring Optimizer: Honeywell Cable Ring Challenge
+
+Given a ResPlan floor plan, decide **how many hubs**, **where they go**, **which rooms
+each hub serves**, **the order nodes are connected**, and **the physical cable ring**,
+so that every hard rule holds, and then minimise
+
+> **fewest hubs first**, then **J = L + 5X + O + 0.5B**
+> (L cable length m, X crossings, O overlap m, B bends)
+
+## Quick start (Windows)
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate.bat
+python -m pip install -r requirements.txt
+REM put ResPlan.pkl (from HACKHIVE.zip) into data\
+python start_here.py               REM solves plan 0, writes outputs\PLAN_00000.json/.png
+python -m streamlit run app.py     REM demo app
+python -m pytest -q                REM tests
+python batch.py --split test --count 300 --baseline   REM benchmark
+```
+
+## Project layout
+
+```
+cable-ring/
+├── app.py                 Streamlit demo: pick/upload plan → Generate → overlay, scores, JSON
+├── batch.py               parallel benchmark over many plans → outputs/batch/summary.csv
+├── start_here.py          first-run check: libraries, dataset, one solved plan
+├── requirements.txt
+├── cablering/             the engine
+│   ├── config.py          every rule, weight and tunable (CONFIRM items marked)
+│   ├── model.py           Plan / Room data classes (metres)
+│   ├── input_loader.py    pickle or JSON → Plan; official scale sqrt(inner.area / area)
+│   ├── geometry.py        cleaning, door passages, free space, clearance
+│   ├── room_graph.py      legal links: doors + open passages only
+│   ├── assignment.py      zones: exact enumeration of connected, capacity-feasible splits
+│   ├── candidates.py      node points per room (≥ 0.5 m from walls, lined up with doors)
+│   ├── routing.py         axis-aligned routing graph + bend-aware Dijkstra + penalties
+│   ├── sequencing.py      exact ring order + node choice (Held-Karp, generalised TSP)
+│   ├── optimizer.py       the engine: zones → cycles → routes → improve → hubs → check
+│   ├── metrics.py         L, X, O, B, J from polylines only (1 mm tolerance)
+│   ├── validation.py      every hard rule, independent of the solver
+│   ├── export_json.py     slide-8 output schema (Pydantic)
+│   └── visualization.py   overlay: zones, hubs, nodes, order, rings, violations in red
+├── tools/make_inputs.py   dataset plans → per-plan input JSON files
+├── tests/                 metric examples from slide 7, validator, end-to-end
+├── data/                  ResPlan.pkl, split.json (not in git)
+├── inputs/                per-plan input JSON
+└── outputs/               results (not in git)
+```
+
+## How the engine works
+
+1. **Load + scale.** `scale = sqrt(inner.area / area)` (slide 4), coordinates ÷ scale.
+   Polygons are repaired; eligible slivers < 0.5 m² (tracing artefacts) are dropped and reported.
+2. **Room graph.** Rooms linked only by doors (door polygon touching two rooms) or open
+   passages (shared boundary with no wall, ≥ 0.6 m). Windows, wall-only contact and the
+   entrance never count.
+3. **Free space.** Each room shrunk 5 cm, plus door passages and open-passage strips,
+   inside the inner boundary. Cable physically cannot cross a wall, window or room
+   boundary anywhere else.
+4. **Zones (fewest hubs).** Lower bound `max(ceil(area/100), ceil(nodes/max_nodes))`.
+   Every split into k connected groups ≤ 100 m² is enumerated exactly; k increases
+   only if no split works.
+5. **Candidates.** Per room: the deepest point plus points lined up with each door and
+   corners between doors, all ≥ 0.5 m from walls (in `optimize` node mode).
+6. **Routing graph.** Horizontal/vertical lines through free-space corners, door centre
+   lines (+ parallel lanes) and every candidate. Dijkstra on (point, heading) so each turn
+   costs 0.5, exactly like the score.
+7. **Cycles.** Per zone, the exact best "one point per room + order" cycle (Held-Karp).
+8. **Realise + improve.** Legs routed with penalties for touching (crossing, 5) or sharing
+   (overlap, 1/m) existing cable; rip-up-and-reroute passes; alternative cycles and the
+   next-best zone splits are tried; a change is kept only if the exact J drops.
+9. **Hubs for free.** Each hub is placed **on its own cable**, on a straight piece inside
+   an eligible room of its zone, ≥ 0.5 m from walls. Splitting a straight run adds no
+   length and no bend. One-room zone: hub 10 cm from the node.
+10. **Check.** Every candidate design goes through the validator; the best valid one
+    wins (fewest hubs, then J, then smaller area gap). If none is valid, the simple
+    baseline is used if it is valid.
+
+## Results (full test split: 1,632 unseen plans)
+
+`python batch.py --split test --count 2000 --baseline`
+
+| | |
+|---|---|
+| Valid | **1,588 / 1,588 solvable plans (100 %)**. The other 44 cannot be solved by anyone: 42 have a single room > 100 m², 2 have a room with no door (organisers exclude such plans) |
+| Hubs at the area lower bound | 1,220 / 1,588. The rest are forced up by zone connectivity (e.g. every bedroom opens only onto the living room) |
+| Mean J | 20.1 |
+| Optimised vs simple baseline | J **58.7 % lower** on average |
+| Crossings | 16 in total over 1,588 plans; mean overlap 0.08 m per plan |
+| Time per plan | 0.5 s mean, < 5 s max |
+
+Data defects handled automatically: eligible slivers < 0.5 m² are dropped (reported in
+`solver.dropped_rooms`), duplicated/overlapping room polygons get distinct node points,
+rooms too small for 0.5 m clearance never get their own hub.
+
+## Interpretations to confirm with the organisers
+
+All are switches in `cablering/config.py`:
+
+| Setting | Current | Question |
+|---|---|---|
+| `max_nodes` | 20 | Brief says 20 per panel, slides say 5 per hub |
+| `node_mode` | `optimize` | Are node points fixed inputs (`fixed`) or ours to choose? |
+| `zone_via_other_rooms` | False | May a zone connect through a bathroom / non-zone room? |
+| `wall_margin_m` | 0.05 | How close may cable run to a wall? |
+| `clearance_from_doors` | True | Does the 0.5 m clearance also apply to doorways? (True is the safe choice) |
+| coordinates | units ÷ scale | Exactly this, no flip / shift? ("origin lower-left, y up") |
+| input JSON | our WKT format | Need a sample organiser input file; only `plan_from_input_dict` changes |
+
+## Output JSON
+
+Slide-8 schema (`plan_id`, `units`, `hubs[]` with `hub_id`, `room_id`, `location`,
+`assigned_rooms`, `assigned_nodes`, `closed_sequence`, `route_segments[]`
+{`from`, `to`, `length_m`, `polyline`}, `ring_length_m`) plus:
+`nodes[]` (we choose node points), `assigned_area_m2`, `reported_metrics`
+(hub_count, length, crossings, overlap, bends, J, valid), `validation`
+(violations + warnings) and `solver` (lower bound, time, notes).
