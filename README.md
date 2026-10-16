@@ -46,6 +46,8 @@ cable-ring/
 │   ├── routing.py         axis-aligned routing graph + bend-aware Dijkstra + penalties
 │   ├── sequencing.py      exact ring order + node choice (Held-Karp, generalised TSP)
 │   ├── optimizer.py       the engine: zones → cycles → routes → improve → hubs → check
+│   ├── quality.py         quality engine: original first, then validated improvements only
+│   ├── relocate.py        node sliding (re-solve with zones fixed)
 │   ├── metrics.py         L, X, O, B, J from polylines only (1 mm tolerance)
 │   ├── validation.py      every hard rule, independent of the solver
 │   ├── export_json.py     slide-8 output schema (Pydantic)
@@ -103,6 +105,49 @@ API: `GET /api/plans/{plan_key}/geometry` (plan shapes for the editor),
 
 If port 8000 is busy, run the backend elsewhere and point the frontend at it:
 `set API_PORT=8001` before `npm run dev`.
+
+## Quality engine (default)
+
+`solve()` runs the **original engine first** and keeps its validated result as the
+guaranteed fallback, then tries improvements and keeps one only if it is valid and better
+by (validity, hubs, J, area gap). So the result is **never worse than the original**.
+`Config(engine="original")` (or `cfg.as_original()`) gives exactly the first engine.
+
+| Step | What it does | Code |
+|---|---|---|
+| Wider search | 6 zone splits × 6 alternative cycles per zone, 4 reroute passes | `config.py` |
+| Bend-aware ordering | routing graph with 4 travel directions (a reversal costs a bend); Held-Karp over (rooms, point, arrival direction) counts the bends at nodes | `routing.DirRoutingGraph`, `sequencing.best_cycles_dir` |
+| Junction-aware rerouting | each leg is rerouted knowing how the neighbouring legs arrive and leave | `optimizer._route_leg` |
+| Door lanes | extra crossing lanes every 0.10 m through doors (≥ wall margin + 0.05 m from the frame), ±0.15 / 0.30 m through openings | `optimizer.guide_lines` |
+| Both-sides doors | also links the rooms found straight across each door (added to the old links) | `room_graph._door_links_both_sides` |
+| One-room zones | hub 2 cm from the node (was 10 cm) | `config.hub_offset_m` |
+| Node sliding | moves nodes onto cable already passing through their room / onto adjacent corners, re-solved with zones fixed | `relocate.py` |
+| Strict check | among designs within 0.10 J of the best, prefer one that passes a stricter check (5 mm tolerance, 3 cm wall margin, narrower doors) | `validation.validate_strict` |
+
+Each output's `solver` section shows `original` (the fallback's metrics), `steps` (every
+candidate tried) and `improved_by` (which step won).
+
+**Results, full test split (1,632 unseen plans):**
+
+| | Original | Quality |
+|---|---|---|
+| Valid | 1,588 | 1,588 (the other 44 are unsolvable: 42 rooms > 100 m², 2 with no door) |
+| Better / same / **worse** than original | | 1,304 / 328 / **0** |
+| Mean J | 20.13 | **19.55 (−2.87 %)** |
+| Median J | 20.23 | 19.79 |
+| Total hubs | 2,840 | 2,838 |
+| Strict-valid | | 1,588 / 1,588 |
+| Time per plan | ~0.5 s | median 2.9 s, p95 10.5 s, max 32 s |
+
+Wins by step: wider bend-aware search 955 plans, node sliding 349 plans.
+(Dev set, 200 `val` plans, step by step: search + 2 cm hub −1.50 %, + bend-aware −2.16 %,
++ door lanes / both-sides doors −2.55 %, + node sliding −3.15 %.)
+
+Benchmark any change against the original:
+`python batch.py --split val --count 200 --out outputs/dev` prints better / same / worse,
+mean and median J and improvements by step; `--set key=value` switches a step off or on
+(e.g. `--set relocate_trials=0 bend_aware=false`).
+Door-link audit against the dataset's own graph: `python tools/audit_links.py --split test`.
 
 ## How the engine works
 

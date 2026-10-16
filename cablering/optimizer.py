@@ -33,8 +33,8 @@ from .geometry import clearance, clearance_obstacles, door_axis, free_space
 from .metrics import compute as compute_metrics
 from .metrics import length
 from .room_graph import build_room_graph
-from .routing import RoutingGraph
-from .sequencing import RingPlan, best_cycles
+from .routing import DirRoutingGraph, RoutingGraph
+from .sequencing import RingPlan, best_cycles, best_cycles_dir
 from .validation import validate
 
 
@@ -56,11 +56,18 @@ class Context:
     D: np.ndarray
     node_id_of: dict[str, str]
     mode: str
+    D4: np.ndarray | None = None          # direction-aware costs (quality engine)
 
 
 def guide_lines(G, cfg) -> tuple[list[float], list[float]]:
-    """Door centre lines (+ parallel lanes for in-and-out runs) and opening centres."""
+    """Door centre lines (+ parallel lanes for in-and-out runs) and opening centres.
+
+    With cfg.extra_door_lanes, every door also gets lanes every 0.10 m across its
+    width, all kept at least wall_margin + 0.05 m from the door frame, and openings get
+    lanes at +-0.15 / 0.30 m.
+    """
     gx, gy = [], []
+    extra = getattr(cfg, "extra_door_lanes", False)
     for _, _, d in G.edges(data=True):
         for ln in d["links"]:
             c = ln["portal"]
@@ -68,12 +75,20 @@ def guide_lines(G, cfg) -> tuple[list[float], list[float]]:
             gy.append(c.y)
             if ln["kind"] == "door":
                 u, width, _, _ = door_axis(ln["geom"])
-                off = min(cfg.door_parallel_offset_m, width / 2 - cfg.wall_margin_m - 0.03)
-                if off > 0.02:
-                    if abs(u[0]) >= abs(u[1]):
-                        gx += [c.x - off, c.x + off]
-                    else:
-                        gy += [c.y - off, c.y + off]
+                limit = width / 2 - cfg.wall_margin_m - (0.05 if extra else 0.03)
+                offsets = [min(cfg.door_parallel_offset_m, limit)]
+                if extra:
+                    offsets += [k * 0.10 for k in (1, 2, 3) if k * 0.10 <= limit]
+                for off in dict.fromkeys(offsets):
+                    if off > 0.02:
+                        if abs(u[0]) >= abs(u[1]):
+                            gx += [c.x - off, c.x + off]
+                        else:
+                            gy += [c.y - off, c.y + off]
+            elif extra:
+                for off in (0.15, 0.30):
+                    gx += [c.x - off, c.x + off]
+                    gy += [c.y - off, c.y + off]
     return gx, gy
 
 
@@ -84,9 +99,22 @@ def build_context(plan, cfg: Config, mode: str, extra_points=()) -> Context:
     legal = free_space(plan, G, 2 * cfg.tol_m)
     pts, room_of, room_cands, fallback = build_candidates(plan, G, cfg, mode)
     gx, gy = guide_lines(G, cfg)
-    router = RoutingGraph(space, [*pts, *extra_points], gx, gy, cfg.w_bend)
-    D = router.all_pairs()
+    D4 = None
+    if getattr(cfg, "bend_aware", False):
+        router = DirRoutingGraph(space, [*pts, *extra_points], gx, gy, cfg.w_bend)
+        D4 = router.all_pairs_dir()
+        D = D4.min(axis=(1, 3))
+    else:
+        router = RoutingGraph(space, [*pts, *extra_points], gx, gy, cfg.w_bend)
+        D = router.all_pairs()
 
+    return Context(plan, cfg, G, space, legal, clearance_obstacles(plan, cfg.clearance_from_doors),
+                   router, room_of, room_cands,
+                   fallback, D, node_ids(plan, mode), mode, D4)
+
+
+def node_ids(plan, mode: str) -> dict[str, str]:
+    """Node ID per eligible room: supplied IDs in fixed mode, otherwise N1, N2, ..."""
     fixed = {n["room_id"]: n["node_id"] for n in (plan.fixed_nodes or [])} if mode == "fixed" else {}
     node_id_of, used, k = {}, set(fixed.values()), 0
     for r in plan.eligible_rooms:
@@ -98,14 +126,19 @@ def build_context(plan, cfg: Config, mode: str, extra_points=()) -> Context:
             k += 1
         node_id_of[r.id] = f"N{k}"
         used.add(f"N{k}")
-    return Context(plan, cfg, G, space, legal, clearance_obstacles(plan, cfg.clearance_from_doors),
-                   router, room_of, room_cands,
-                   fallback, D, node_id_of, mode)
+    return node_id_of
 
 
 def single_room_cost(cfg: Config) -> float:
     d = cfg.hub_offset_m
     return cfg.w_length * 2 * d + cfg.w_overlap * d + cfg.w_bend * 2
+
+
+def cycles_for(ctx: Context, clusters, top: int, single_cost: float) -> list[RingPlan]:
+    """Best cycles for a zone: direction-aware when the context has D4."""
+    if ctx.D4 is not None:
+        return best_cycles_dir(ctx.D4, clusters, top, single_cost)
+    return best_cycles(ctx.D, clusters, top, single_cost)
 
 
 # --------------------------------------------------------------------------- #
@@ -118,6 +151,10 @@ class Leg:
     b: int                 # candidate index (end node)
     verts: list[int] | None = None
     segs: list[int] | None = None
+    prev: int = -1         # index of the previous / next leg in the same ring
+    nxt: int = -1
+    start_dir: int | None = None     # direction-aware routing only
+    end_dir: int | None = None
 
 
 @dataclass
@@ -140,8 +177,10 @@ def realize(ctx: Context, blocks, plans, optimize: bool, t_end: float) -> Design
     for zi, rp in enumerate(plans):
         m = len(rp.order)
         if m >= 2:
+            first = len(legs)
             for i in range(m):
-                legs.append(Leg(zi, rp.order[i], rp.order[(i + 1) % m]))
+                legs.append(Leg(zi, rp.order[i], rp.order[(i + 1) % m],
+                                prev=first + (i - 1) % m, nxt=first + (i + 1) % m))
     term_v = {r.term_vid[c] for rp in plans for c in rp.order if r.term_vid[c] >= 0}
 
     for k in range(len(legs)):
@@ -154,7 +193,7 @@ def realize(ctx: Context, blocks, plans, optimize: bool, t_end: float) -> Design
             for k in range(len(legs)):
                 if time.time() > t_end:
                     break
-                old = (legs[k].verts, legs[k].segs)
+                old = (legs[k].verts, legs[k].segs, legs[k].start_dir, legs[k].end_dir)
                 _route_leg(ctx, legs, k, term_v, penalize=True)
                 if legs[k].verts == old[0]:
                     continue
@@ -162,7 +201,7 @@ def realize(ctx: Context, blocks, plans, optimize: bool, t_end: float) -> Design
                 if m2["cost_J"] < m["cost_J"] - 1e-9:
                     m, improved = m2, True
                 else:
-                    legs[k].verts, legs[k].segs = old
+                    legs[k].verts, legs[k].segs, legs[k].start_dir, legs[k].end_dir = old
             if not improved:
                 break
     return Design(blocks, plans, legs, m)
@@ -185,7 +224,16 @@ def _route_leg(ctx: Context, legs: list[Leg], k: int, term_v: set[int], penalize
                 used_seg[o.segs] = True
                 used_vert[o.verts] = True
         used_vert[list(term_v)] = False
-    _, verts = r.route(a, b, used_seg, used_vert, blocked, cfg.w_overlap, cfg.w_cross)
+    if isinstance(r, DirRoutingGraph):
+        # a bend at a node counts: compare with how the neighbouring legs arrive / leave
+        before = legs[leg.prev].end_dir if leg.prev >= 0 else None
+        after = legs[leg.nxt].start_dir if leg.nxt >= 0 else None
+        start_cost = [0.0 if before is None or d == before else cfg.w_bend for d in range(4)]
+        end_cost = [0.0 if after is None or d == after else cfg.w_bend for d in range(4)]
+        _, verts, leg.start_dir, leg.end_dir = r.route(
+            a, b, used_seg, used_vert, blocked, cfg.w_overlap, cfg.w_cross, start_cost, end_cost)
+    else:
+        _, verts = r.route(a, b, used_seg, used_vert, blocked, cfg.w_overlap, cfg.w_cross)
     leg.verts = verts
     leg.segs = r.segments_of(verts) if verts else []
 
@@ -304,7 +352,7 @@ def insert_hub(ctx: Context, rooms, rp: RingPlan, cycle, all_legs, node_pts, pla
         for c in tries:
             N = ctx.router.terminals[c]
             others = [q for q in node_pts if math.dist(q, ctx.router.terminals[c0]) > 1e-9]
-            for d in (cfg.hub_offset_m, cfg.hub_offset_m / 2, 0.02):
+            for d in dict.fromkeys((cfg.hub_offset_m, 0.05, 0.10, 0.02)):   # closest first
                 for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                     P = (N[0] + dx * d, N[1] + dy * d)
                     res = ok(P, None, others)
@@ -345,7 +393,30 @@ def _pl(points) -> list[list[float]]:
 # Public entry point
 # --------------------------------------------------------------------------- #
 def solve(plan, cfg: Config | None = None, baseline: bool = False) -> dict:
-    """Solve one plan. Returns the output dict (with `validation` and `solver` info)."""
+    """Solve one plan. Returns the output dict (with `validation` and `solver` info).
+
+    cfg.engine == "quality" (default): original engine first, then improvements, never
+    worse. cfg.engine == "original": the original engine only.
+    baseline=True: the greedy baseline (region growing, nearest neighbour, greedy
+    best-first paths; no Dijkstra, no Held-Karp), the reference the judges compare with.
+    """
+    cfg = cfg or Config()
+    if baseline:
+        from .greedy import solve_greedy
+        return solve_greedy(plan, cfg)
+    if cfg.engine == "original":
+        return solve_original(plan, cfg)
+    from .quality import solve_quality          # local import: quality imports this module
+    return solve_quality(plan, cfg)
+
+
+def solve_original(plan, cfg: Config | None = None, baseline: bool = False) -> dict:
+    """The original engine (zones -> cycles -> routes -> hubs -> validate), as frozen.
+
+    The flags in cfg (search breadth, bend-aware routing, door lanes, ...) only change
+    behaviour when the quality engine passes its own settings; `cfg.as_original()` gives
+    exactly the first engine.
+    """
     cfg = cfg or Config()
     t0 = time.time()
     t_end = t0 + cfg.time_budget_s
@@ -377,7 +448,7 @@ def solve(plan, cfg: Config | None = None, baseline: bool = False) -> dict:
                 cache[mask] = []      # no room here can hold a hub 0.5 m from the walls
             else:
                 clusters = [ctx.room_cands[x] for x in rooms]
-                cache[mask] = best_cycles(ctx.D, clusters, 1 if baseline else cfg.zone_alternatives, one_room)
+                cache[mask] = cycles_for(ctx, clusters, 1 if baseline else cfg.zone_alternatives, one_room)
         return cache[mask]
 
     # ---- 2. fewest hubs: first k with at least one routable split ---------
@@ -432,7 +503,7 @@ def solve(plan, cfg: Config | None = None, baseline: bool = False) -> dict:
     if chosen is None:
         chosen = designs[0]
         if not baseline:  # ---- 8. fallback
-            fb = solve(plan, cfg, baseline=True)
+            fb = solve_original(plan, cfg, baseline=True)
             if fb["validation"]["valid"]:
                 fb["solver"]["note"] = "optimised designs were invalid; simple baseline used"
                 return fb
@@ -492,11 +563,11 @@ def solve_with_fixed_points(plan, cfg: Config, blocks: list[list[str]],
                     for r in rooms]
         if zi in hub_term:
             h = hub_term[zi]
-            opts = best_cycles(ctx.D, [[h], *clusters], top=1)
+            opts = cycles_for(ctx, [[h], *clusters], 1, single_room_cost(cfg))
             if opts:
                 plans.append(RingPlan(opts[0].cost, opts[0].order, hub=h))
         else:
-            opts = best_cycles(ctx.D, clusters, top=1, single_room_cost=single_room_cost(cfg))
+            opts = cycles_for(ctx, clusters, 1, single_room_cost(cfg))
             if opts:
                 plans.append(opts[0])
         if not opts:

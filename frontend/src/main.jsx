@@ -305,7 +305,7 @@ function App() {
               <label className="check-row">
                 <input type="checkbox" checked={settings.compare}
                   onChange={(event) => updateSetting("compare", event.target.checked)} />
-                <span>Also run the simple baseline (for comparison)</span>
+                <span>Also run the greedy baseline (for comparison)</span>
               </label>
             </div>
           </details>
@@ -347,7 +347,9 @@ function App() {
                   <button role="tab" aria-selected={activeTab === "optimized"} className={activeTab === "optimized" ? "active" : ""}
                     onClick={() => setActiveTab("optimized")}>Optimised</button>
                   {baseline && <button role="tab" aria-selected={activeTab === "baseline"} className={activeTab === "baseline" ? "active" : ""}
-                    onClick={() => setActiveTab("baseline")}>Baseline</button>}
+                    onClick={() => setActiveTab("baseline")}
+                    title="Greedy baseline: region growing, nearest neighbour, greedy best-first paths (no Dijkstra)">
+                    Greedy baseline</button>}
                   <button role="tab" aria-selected={activeTab === "whatif"} className={activeTab === "whatif" ? "active" : ""}
                     onClick={() => setActiveTab("whatif")}>What-if simulator</button>
                 </div>

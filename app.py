@@ -184,7 +184,7 @@ def solve(request: SolveRequest) -> dict:
         "output": output,
         "baseline": baseline,
         "optimized_image": _image_data(plan, output),
-        "baseline_image": _image_data(plan, baseline, f"{plan.plan_id} (baseline)") if baseline else None,
+        "baseline_image": _image_data(plan, baseline, f"{plan.plan_id} (greedy baseline)") if baseline else None,
         "output_json": check_schema(output).model_dump_json(by_alias=True, indent=2),
         "plotly_asset_url": PLOTLY_ASSET_URL,
     }
