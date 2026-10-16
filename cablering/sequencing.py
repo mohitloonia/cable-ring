@@ -20,6 +20,7 @@ import numpy as np
 class RingPlan:
     cost: float
     order: list[int]      # candidate index per room, in visiting order (a cycle)
+    hub: int | None = None  # fixed hub terminal (what-if "move hub"); then order[0] == hub
 
 
 def best_cycles(D: np.ndarray, clusters: list[list[int]], top: int = 3,

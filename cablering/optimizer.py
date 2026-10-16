@@ -77,13 +77,14 @@ def guide_lines(G, cfg) -> tuple[list[float], list[float]]:
     return gx, gy
 
 
-def build_context(plan, cfg: Config, mode: str) -> Context:
+def build_context(plan, cfg: Config, mode: str, extra_points=()) -> Context:
+    """`extra_points` become extra routing terminals after the candidates (fixed hubs)."""
     G = build_room_graph(plan, cfg)
     space = free_space(plan, G, cfg.wall_margin_m)
     legal = free_space(plan, G, 2 * cfg.tol_m)
     pts, room_of, room_cands, fallback = build_candidates(plan, G, cfg, mode)
     gx, gy = guide_lines(G, cfg)
-    router = RoutingGraph(space, pts, gx, gy, cfg.w_bend)
+    router = RoutingGraph(space, [*pts, *extra_points], gx, gy, cfg.w_bend)
     D = router.all_pairs()
 
     fixed = {n["room_id"]: n["node_id"] for n in (plan.fixed_nodes or [])} if mode == "fixed" else {}
@@ -221,7 +222,10 @@ def finalize(ctx: Context, design: Design) -> dict:
     for zi, (rooms, rp) in enumerate(zip(design.blocks, design.plans)):
         hub_id = f"H{zi + 1}"
         others = [pts for zj, cyc in enumerate(cycles) for k, (_, _, pts) in enumerate(cyc)]
-        hub = insert_hub(ctx, rooms, rp, cycles[zi], others, list(node_pts.values()), placed_hubs)
+        if rp.hub is not None:                          # hub fixed by hand: the cycle starts at it
+            hub = _fixed_hub(ctx, rooms, rp, cycles[zi])
+        else:
+            hub = insert_hub(ctx, rooms, rp, cycles[zi], others, list(node_pts.values()), placed_hubs)
         if hub is None:                                 # should not happen; validator will flag it
             c0 = rp.order[0]
             hub = (node_pts[c0], ctx.room_of[c0], [(c0, c0, [node_pts[c0], node_pts[c0]])])
@@ -253,6 +257,17 @@ def finalize(ctx: Context, design: Design) -> dict:
     out = {"plan_id": plan.plan_id, "units": "m", "hubs": hubs, "nodes": nodes}
     out["reported_metrics"] = compute_metrics(out, ctx.cfg)
     return out
+
+
+def _fixed_hub(ctx: Context, rooms, rp: RingPlan, cycle):
+    """Ring whose hub was placed by hand: rp.order[0] is the hub terminal."""
+    P = ctx.router.terminals[rp.hub]
+    p = Point(P)
+    zone = [ctx.plan.room(x) for x in rooms]
+    others = [r for r in ctx.plan.eligible_rooms if r.id not in rooms]
+    room = next((r for r in zone + others if r.poly.buffer(ctx.cfg.tol_m).covers(p)), None)
+    legs = [(None if a == rp.hub else a, None if b == rp.hub else b, pts) for a, b, pts in cycle]
+    return P, room.id if room else "outside", legs
 
 
 def insert_hub(ctx: Context, rooms, rp: RingPlan, cycle, all_legs, node_pts, placed_hubs):
@@ -422,6 +437,75 @@ def solve(plan, cfg: Config | None = None, baseline: bool = False) -> dict:
                 fb["solver"]["note"] = "optimised designs were invalid; simple baseline used"
                 return fb
     return _finish(ctx, chosen.out, chosen.report, info, t0)
+
+
+def solve_with_fixed_hubs(plan, cfg: Config, blocks: list[list[str]],
+                          fixed_hubs: dict[int, tuple[float, float]]) -> dict:
+    """Re-solve with the zones given and some hubs placed by hand (what-if "move a hub")."""
+    return solve_with_fixed_points(plan, cfg, blocks, hub_points=fixed_hubs)
+
+
+def solve_with_fixed_points(plan, cfg: Config, blocks: list[list[str]],
+                            hub_points: dict[int, tuple[float, float]] | None = None,
+                            node_points: dict[str, tuple[float, float]] | None = None) -> dict:
+    """Re-solve with the zones given and some devices placed by hand (what-if / drag).
+
+    `blocks[i]` are the rooms of zone i. `hub_points[i]` fixes the hub of zone i;
+    `node_points[room_id]` fixes that room's node. Everything not fixed is optimised as
+    usual; the visiting order and every cable route are always re-optimised. The result
+    is validated like any design, so a device dropped in a bad spot shows up in red.
+    """
+    hub_points, node_points = hub_points or {}, node_points or {}
+    t0 = time.time()
+    hz, nr = sorted(hub_points), sorted(node_points)
+    mode = "fixed" if (cfg.node_mode == "fixed" and plan.fixed_nodes) else "optimize"
+    ctx = build_context(plan, cfg, mode,
+                        extra_points=[hub_points[z] for z in hz] + [node_points[r] for r in nr])
+    n_cand = len(ctx.room_of)
+    hub_term = {z: n_cand + i for i, z in enumerate(hz)}
+    node_term = {r: n_cand + len(hz) + j for j, r in enumerate(nr)}
+    ctx.room_of = [*ctx.room_of, *[""] * len(hz), *nr]      # rooms of the extra terminals
+    info = {"mode": "what-if: devices placed by hand", "node_mode": mode,
+            "hub_lower_bound": lower_bound([plan.room(r).area for b in blocks for r in b], cfg),
+            "zone_splits_feasible": 1, "designs_evaluated": 1,
+            "fallback_rooms": sorted(ctx.fallback_rooms),
+            "dropped_rooms": plan.source.get("dropped_rooms", [])}
+
+    for r, t in node_term.items():
+        if ctx.router.term_vid[t] < 0:
+            return _infeasible(ctx, f"{ctx.node_id_of.get(r, r)} is inside a wall or outside the "
+                                    f"building there, so no cable can reach it", info, t0)
+    for z, t in hub_term.items():
+        if ctx.router.term_vid[t] < 0:
+            return _infeasible(ctx, f"H{z + 1} is inside a wall or outside the building there, "
+                                    f"so no cable can reach it", info, t0)
+
+    hub_pts = [ctx.router.terminals[h] for h in hub_term.values()]
+
+    def away_from_hubs(cands):      # a node must not sit on (or right next to) a placed hub
+        far = [c for c in cands if all(math.dist(ctx.router.terminals[c], p) > 0.3 for p in hub_pts)]
+        return far or cands
+
+    plans = []
+    for zi, rooms in enumerate(blocks):
+        clusters = [[node_term[r]] if r in node_term else away_from_hubs(ctx.room_cands[r])
+                    for r in rooms]
+        if zi in hub_term:
+            h = hub_term[zi]
+            opts = best_cycles(ctx.D, [[h], *clusters], top=1)
+            if opts:
+                plans.append(RingPlan(opts[0].cost, opts[0].order, hub=h))
+        else:
+            opts = best_cycles(ctx.D, clusters, top=1, single_room_cost=single_room_cost(cfg))
+            if opts:
+                plans.append(opts[0])
+        if not opts:
+            return _infeasible(ctx, f"zone {zi + 1} cannot be cabled with the devices placed like "
+                                    f"this (no route through doors)", info, t0)
+    design = realize(ctx, blocks, plans, True, t0 + cfg.time_budget_s)
+    out = finalize(ctx, design)
+    report = validate(plan, out, cfg, ctx.G, ctx.legal)
+    return _finish(ctx, out, report, info, t0)
 
 
 def _empty(plan) -> dict:
