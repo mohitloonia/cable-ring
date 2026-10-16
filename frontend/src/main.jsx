@@ -51,7 +51,7 @@ function App() {
   const [scenarioVersion, setScenarioVersion] = useState(0);
   const sceneVariant = activeTab === "baseline"
     ? "&baseline=true"
-    : activeTab === "whatif" && scenarioResult ? `&scenario=true&v=${scenarioVersion}` : "";
+    : activeTab === "whatif" && scenarioVersion > 0 ? `&scenario=true&v=${scenarioVersion}` : "";
   const sceneUrl = result && plan
     ? `/api/plans/${plan.plan_key}/3d?wall_height=${sceneSettings.wallHeight}&wall_transparency=${sceneSettings.wallTransparency}${sceneVariant}`
     : "";
@@ -60,6 +60,7 @@ function App() {
     setWhatIfOptions(null);
     setScenarioResult(null);
     setScenario(defaultScenario());
+    setScenarioVersion(0);
   }
 
   useEffect(() => {
@@ -91,6 +92,7 @@ function App() {
   function resetScenario() {
     setScenario(defaultScenario(whatIfOptions?.official_rules));
     setScenarioResult(null);
+    setScenarioVersion(0);
   }
 
   useEffect(() => {
@@ -373,14 +375,17 @@ function App() {
                   </div>
                 )}
                 {activeTab === "whatif" && (
-                  <WhatIfPanel options={whatIfOptions} scenario={scenario} setScenario={setScenario}
+                  <WhatIfPanel options={whatIfOptions} planKey={plan.plan_key} official={output}
+                    scenario={scenario} setScenario={setScenario}
                     onRun={runScenario} onReset={resetScenario} busy={operation === "scenario"}
-                    scenarioResult={scenarioResult} displayMode={displayMode} />
+                    scenarioResult={scenarioResult} displayMode={displayMode}
+                    onDragScenario={() => setScenarioVersion((v) => v + 1)}
+                    onDragReset={() => setScenarioVersion(0)} />
                 )}
                 {activeTab === "whatif" && displayMode === "3d" && (
-                  <p className="help-text">{scenarioResult
-                    ? "3D view of the what-if scenario. Closed doors are drawn as wall."
-                    : "3D view of the official solution. Run a scenario to see it here."}</p>
+                  <p className="help-text">{scenarioVersion > 0
+                    ? "3D view of your what-if change (latest drag or scenario)."
+                    : "3D view of the official solution. Drag a device or run a scenario to see it here."}</p>
                 )}
               </>
             )}

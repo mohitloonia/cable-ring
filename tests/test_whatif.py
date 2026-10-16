@@ -41,6 +41,30 @@ def test_hub_pushed_into_a_wall_is_flagged(two_room_plan):
     assert any(v["rule"] == "hub" for v in out["validation"]["violations"])
 
 
+def test_dragging_devices_never_beats_the_optimizer(two_room_plan, cfg):
+    from cablering.optimizer import solve_with_fixed_points
+    official = solve(two_room_plan, cfg)
+    blocks = [h["assigned_rooms"] for h in official["hubs"]]
+    hubs = {i: (h["location"]["x"], h["location"]["y"]) for i, h in enumerate(official["hubs"])}
+    nodes = {n["room_id"]: (n["location"]["x"], n["location"]["y"]) for n in official["nodes"]}
+    J0 = official["reported_metrics"]["cost_J"]
+
+    same = solve_with_fixed_points(two_room_plan, cfg, blocks, hubs, nodes)
+    assert abs(same["reported_metrics"]["cost_J"] - J0) < 1e-6      # nothing moved: same design
+
+    moved = dict(nodes)
+    x, y = moved["R02"]
+    moved["R02"] = (x + 1.5, y + 1.0)
+    out = solve_with_fixed_points(two_room_plan, cfg, blocks, hubs, moved)
+    assert out["validation"]["valid"], out["validation"]["violations"]
+    assert out["reported_metrics"]["cost_J"] >= J0 - 1e-6
+
+    outside = dict(nodes)
+    outside["R02"] = (20.0, 20.0)
+    bad = solve_with_fixed_points(two_room_plan, cfg, blocks, hubs, outside)
+    assert not bad["validation"]["valid"] and "no cable can reach it" in bad["validation"]["violations"][0]["message"]
+
+
 def test_unknown_hub_is_reported_not_crashed(two_room_plan):
     _, out = run(two_room_plan, Scenario(hub_move=HubMove("H9", "R01")))
     assert "does not exist" in out["scenario"]["note"]

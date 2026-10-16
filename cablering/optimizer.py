@@ -441,23 +441,44 @@ def solve(plan, cfg: Config | None = None, baseline: bool = False) -> dict:
 
 def solve_with_fixed_hubs(plan, cfg: Config, blocks: list[list[str]],
                           fixed_hubs: dict[int, tuple[float, float]]) -> dict:
-    """Re-solve with the zones given and some hubs placed by hand (what-if "move a hub").
+    """Re-solve with the zones given and some hubs placed by hand (what-if "move a hub")."""
+    return solve_with_fixed_points(plan, cfg, blocks, hub_points=fixed_hubs)
 
-    `blocks[i]` are the rooms of zone i; `fixed_hubs[i]` is the hand-placed hub point
-    of zone i. Other zones get their hub on the cable as usual. The result is validated
-    like any design, so a badly placed hub shows up as a violation.
+
+def solve_with_fixed_points(plan, cfg: Config, blocks: list[list[str]],
+                            hub_points: dict[int, tuple[float, float]] | None = None,
+                            node_points: dict[str, tuple[float, float]] | None = None) -> dict:
+    """Re-solve with the zones given and some devices placed by hand (what-if / drag).
+
+    `blocks[i]` are the rooms of zone i. `hub_points[i]` fixes the hub of zone i;
+    `node_points[room_id]` fixes that room's node. Everything not fixed is optimised as
+    usual; the visiting order and every cable route are always re-optimised. The result
+    is validated like any design, so a device dropped in a bad spot shows up in red.
     """
+    hub_points, node_points = hub_points or {}, node_points or {}
     t0 = time.time()
-    order = sorted(fixed_hubs)
+    hz, nr = sorted(hub_points), sorted(node_points)
     mode = "fixed" if (cfg.node_mode == "fixed" and plan.fixed_nodes) else "optimize"
-    ctx = build_context(plan, cfg, mode, extra_points=[fixed_hubs[z] for z in order])
+    ctx = build_context(plan, cfg, mode,
+                        extra_points=[hub_points[z] for z in hz] + [node_points[r] for r in nr])
     n_cand = len(ctx.room_of)
-    hub_term = {z: n_cand + i for i, z in enumerate(order)}
-    info = {"mode": "what-if: hubs placed by hand", "node_mode": mode,
+    hub_term = {z: n_cand + i for i, z in enumerate(hz)}
+    node_term = {r: n_cand + len(hz) + j for j, r in enumerate(nr)}
+    ctx.room_of = [*ctx.room_of, *[""] * len(hz), *nr]      # rooms of the extra terminals
+    info = {"mode": "what-if: devices placed by hand", "node_mode": mode,
             "hub_lower_bound": lower_bound([plan.room(r).area for b in blocks for r in b], cfg),
             "zone_splits_feasible": 1, "designs_evaluated": 1,
             "fallback_rooms": sorted(ctx.fallback_rooms),
             "dropped_rooms": plan.source.get("dropped_rooms", [])}
+
+    for r, t in node_term.items():
+        if ctx.router.term_vid[t] < 0:
+            return _infeasible(ctx, f"{ctx.node_id_of.get(r, r)} is inside a wall or outside the "
+                                    f"building there, so no cable can reach it", info, t0)
+    for z, t in hub_term.items():
+        if ctx.router.term_vid[t] < 0:
+            return _infeasible(ctx, f"H{z + 1} is inside a wall or outside the building there, "
+                                    f"so no cable can reach it", info, t0)
 
     hub_pts = [ctx.router.terminals[h] for h in hub_term.values()]
 
@@ -467,7 +488,8 @@ def solve_with_fixed_hubs(plan, cfg: Config, blocks: list[list[str]],
 
     plans = []
     for zi, rooms in enumerate(blocks):
-        clusters = [away_from_hubs(ctx.room_cands[r]) for r in rooms]
+        clusters = [[node_term[r]] if r in node_term else away_from_hubs(ctx.room_cands[r])
+                    for r in rooms]
         if zi in hub_term:
             h = hub_term[zi]
             opts = best_cycles(ctx.D, [[h], *clusters], top=1)
@@ -478,8 +500,8 @@ def solve_with_fixed_hubs(plan, cfg: Config, blocks: list[list[str]],
             if opts:
                 plans.append(opts[0])
         if not opts:
-            return _infeasible(ctx, f"zone {zi + 1} cannot be cabled with this hub position "
-                                    f"(no route through doors)", info, t0)
+            return _infeasible(ctx, f"zone {zi + 1} cannot be cabled with the devices placed like "
+                                    f"this (no route through doors)", info, t0)
     design = realize(ctx, blocks, plans, True, t0 + cfg.time_budget_s)
     out = finalize(ctx, design)
     report = validate(plan, out, cfg, ctx.G, ctx.legal)

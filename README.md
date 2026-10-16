@@ -74,24 +74,32 @@ only; scoring uses the 2D polylines. Code: `cablering/view3d.py`.
 
 ## What-if simulator
 
-After **Generate**, open the **What-if simulator** tab to change the building or the rules
-and watch the design respond:
+After **Generate**, open the **What-if simulator** tab. The score always stays official
+(J = L + 5X + O + 0.5B); it cannot be changed here.
+
+**Drag devices** (default): grab any node (circle) or hub (diamond) on the floor plan with
+the mouse and drop it somewhere else. The other devices stay put, the visiting order and
+every cable route are re-optimised through the doors, and the panel shows the cost against
+the optimizer's design, e.g. "+8.8 J worse than the optimizer". Undo and Reset to optimal
+are one click; a device dropped in a wall or outside is refused with the reason. With nothing
+moved the cost is exactly the optimum, so every drag shows how much the optimizer saves.
+
+**Building & rules**:
 
 | Control | What happens |
 |---|---|
 | **Close a door** (D1, D2, ... tagged on the official plan) | The door becomes wall: no cable through it, and the two rooms lose that zone link |
 | **Rules** | Max area / nodes per hub, hub-node clearance, zones through bathrooms |
-| **Score weights** | Crossing and bend weights in J (the official design is re-scored with the same weights for a fair comparison) |
-| **Move a hub** | Put a hub in a chosen room (+ nudge). Zones stay, that ring is re-routed through it; bad spots show up as red violations |
 
 Every difference from the official benchmark is listed in a yellow banner, so a scenario is
-never mistaken for a submitted result. The result shows an official-vs-scenario table
-(worse in red, better in green), both drawings side by side, and the scenario in 3D.
-A hand-placed hub has never beaten the optimizer's hub in our tests, which makes a good demo.
+never mistaken for a submitted result, with an official-vs-scenario table (worse in red,
+better in green) and both drawings side by side. The 3D view shows the latest drag or scenario.
 
-API: `GET /api/plans/{plan_key}/whatif` (doors, rooms, hubs, labelled door map) and
+API: `GET /api/plans/{plan_key}/geometry` (plan shapes for the editor),
+`POST /api/drag` (re-route with devices where they were dropped),
+`GET /api/plans/{plan_key}/whatif` (doors, rooms, hubs, labelled door map) and
 `POST /api/whatif` (run a scenario). Code: `cablering/whatif.py`,
-`optimizer.solve_with_fixed_hubs`, `frontend/src/WhatIf.jsx`.
+`optimizer.solve_with_fixed_points`, `frontend/src/DragEditor.jsx`, `frontend/src/WhatIf.jsx`.
 
 If port 8000 is busy, run the backend elsewhere and point the frontend at it:
 `set API_PORT=8001` before `npm run dev`.
