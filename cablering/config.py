@@ -27,7 +27,7 @@ MIN_ROOM_AREA_M2 = 0.5
 class Config:
     # ---- hard rules ------------------------------------------------------
     max_area_m2: float = 100.0          # eligible-room area per hub
-    max_nodes: int = 20                 # nodes per hub. CONFIRM: slides say 5, brief says 20
+    max_nodes: int = 5                  # nodes per hub (set by the judges; was 20)
     clearance_m: float = 0.5            # hub (and chosen node) distance from walls
     tol_m: float = 1e-3                 # checker tolerance (1 mm)
 

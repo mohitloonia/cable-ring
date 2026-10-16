@@ -15,7 +15,7 @@ export function defaultScenario(rules) {
   return {
     closed_doors: [],
     max_area_m2: rules?.max_area_m2 ?? 100,
-    max_nodes: rules?.max_nodes ?? 20,
+    max_nodes: rules?.max_nodes ?? 5,
     clearance_m: rules?.clearance_m ?? 0.5,
     zone_via_other_rooms: rules?.zone_via_other_rooms ?? false,
   };

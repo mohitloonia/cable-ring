@@ -127,7 +127,10 @@ by (validity, hubs, J, area gap). So the result is **never worse than the origin
 Each output's `solver` section shows `original` (the fallback's metrics), `steps` (every
 candidate tried) and `improved_by` (which step won).
 
-**Results, full test split (1,632 unseen plans):**
+**Results, full test split (1,632 unseen plans), max 5 nodes and 100 m² per hub:**
+(Identical to the earlier 20-node run: on the test split the 100 m² limit always binds
+first, so no hub ever needed more than 5 nodes. Across all 17,000 plans the 5-node rule
+changes 57 homes with 6+ small rooms, e.g. PLAN_16605 / 09782 / 05142 in `inputs/`.)
 
 | | Greedy baseline | Original | Quality |
 |---|---|---|---|
@@ -202,7 +205,7 @@ All are switches in `cablering/config.py`:
 
 | Setting | Current | Question |
 |---|---|---|
-| `max_nodes` | 20 | Brief says 20 per panel, slides say 5 per hub |
+| `max_nodes` | **5** | Set by the judges: at most 5 nodes per hub, together with the 100 m² limit (was 20) |
 | `node_mode` | `optimize` | Are node points fixed inputs (`fixed`) or ours to choose? |
 | `zone_via_other_rooms` | False | May a zone connect through a bathroom / non-zone room? |
 | `wall_margin_m` | 0.05 | How close may cable run to a wall? |

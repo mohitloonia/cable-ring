@@ -39,7 +39,7 @@ function App() {
   const [operation, setOperation] = useState("");
   const [error, setError] = useState("");
   const [settings, setSettings] = useState({
-    max_nodes: 20,
+    max_nodes: 5,
     node_mode: "optimize",
     zone_via_other_rooms: false,
     time_budget_s: 30,

@@ -33,6 +33,16 @@ def test_quality_never_worse_on_dataset_plans(dataset, index):
     assert out["validation"]["valid"]
 
 
+def test_max_five_nodes_per_hub(dataset):
+    assert Config().max_nodes == 5                      # judges' rule, with the 100 m2 limit
+    plan = plan_from_index(52, dataset)                 # 6 eligible rooms
+    assert len(plan.eligible_rooms) > 5
+    for out in (solve(plan, Config(relocate_trials=0)), solve(plan, Config(), baseline=True)):
+        assert out["validation"]["valid"], out["validation"]["violations"]
+        assert all(len(h["assigned_nodes"]) <= 5 for h in out["hubs"])
+        assert out["reported_metrics"]["hub_count"] >= 2
+
+
 def test_design_key_orders_like_the_judges():
     def d(valid, hubs, J, gap=0.0):
         return {"reported_metrics": {"valid": valid, "hub_count": hubs, "cost_J": J, "area_gap_m2": gap}}
