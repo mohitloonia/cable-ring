@@ -586,7 +586,6 @@ function App() {
                     onClick={() => setActiveTab("baseline")}
                     title="Greedy baseline: region growing, nearest neighbour, greedy best-first paths (no Dijkstra)">
                     Greedy baseline</button>}
-                    onClick={() => setActiveTab("baseline")}>Baseline</button>}
                   {result.alternative_image && <button role="tab"
                     aria-selected={activeTab === "assistantAlternative"}
                     className={activeTab === "assistantAlternative" ? "active" : ""}
