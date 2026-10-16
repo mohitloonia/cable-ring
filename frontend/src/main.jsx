@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { WhatIfPanel, defaultScenario, scenarioRequest } from "./WhatIf.jsx";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -44,9 +45,53 @@ function App() {
     time_budget_s: 30,
     compare: true,
   });
+  const [whatIfOptions, setWhatIfOptions] = useState(null);
+  const [scenario, setScenario] = useState(defaultScenario());
+  const [scenarioResult, setScenarioResult] = useState(null);
+  const [scenarioVersion, setScenarioVersion] = useState(0);
+  const sceneVariant = activeTab === "baseline"
+    ? "&baseline=true"
+    : activeTab === "whatif" && scenarioResult ? `&scenario=true&v=${scenarioVersion}` : "";
   const sceneUrl = result && plan
-    ? `/api/plans/${plan.plan_key}/3d?wall_height=${sceneSettings.wallHeight}&wall_transparency=${sceneSettings.wallTransparency}${activeTab === "baseline" ? "&baseline=true" : ""}`
+    ? `/api/plans/${plan.plan_key}/3d?wall_height=${sceneSettings.wallHeight}&wall_transparency=${sceneSettings.wallTransparency}${sceneVariant}`
     : "";
+
+  function resetWhatIf() {
+    setWhatIfOptions(null);
+    setScenarioResult(null);
+    setScenario(defaultScenario());
+  }
+
+  useEffect(() => {
+    if (activeTab !== "whatif" || !result || !plan || whatIfOptions) return;
+    api(`/api/plans/${plan.plan_key}/whatif`)
+      .then((options) => {
+        setWhatIfOptions(options);
+        setScenario(defaultScenario(options.official_rules));
+      })
+      .catch((reason) => setError(reason.message));
+  }, [activeTab, result, plan, whatIfOptions]);
+
+  async function runScenario() {
+    setError("");
+    setOperation("scenario");
+    try {
+      setScenarioResult(await api("/api/whatif", {
+        method: "POST",
+        body: JSON.stringify(scenarioRequest(plan.plan_key, scenario)),
+      }));
+      setScenarioVersion((v) => v + 1);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setOperation("");
+    }
+  }
+
+  function resetScenario() {
+    setScenario(defaultScenario(whatIfOptions?.official_rules));
+    setScenarioResult(null);
+  }
 
   useEffect(() => {
     api("/api/status")
@@ -93,6 +138,7 @@ function App() {
     setPlanIndex(String(index));
     setPlan(null);
     setResult(null);
+    resetWhatIf();
     setError("");
     setOperation("loading");
     try {
@@ -127,6 +173,7 @@ function App() {
     setSource("file");
     setPlan(null);
     setResult(null);
+    resetWhatIf();
     setError("");
     setOperation("loading");
     try {
@@ -151,6 +198,7 @@ function App() {
         method: "POST",
         body: JSON.stringify({ plan_key: plan.plan_key, ...settings }),
       }));
+      resetWhatIf();
       setActiveTab("optimized");
       setDisplayMode("2d");
     } catch (reason) {
@@ -164,7 +212,7 @@ function App() {
   const baseline = result?.baseline;
   const metrics = output?.reported_metrics;
   const solver = output?.solver || {};
-  const shownImage = result
+  const shownImage = activeTab === "whatif" ? null : result
     ? activeTab === "baseline" && baseline ? result.baseline_image : result.optimized_image
     : plan?.image;
 
@@ -298,6 +346,8 @@ function App() {
                     onClick={() => setActiveTab("optimized")}>Optimised</button>
                   {baseline && <button role="tab" aria-selected={activeTab === "baseline"} className={activeTab === "baseline" ? "active" : ""}
                     onClick={() => setActiveTab("baseline")}>Baseline</button>}
+                  <button role="tab" aria-selected={activeTab === "whatif"} className={activeTab === "whatif" ? "active" : ""}
+                    onClick={() => setActiveTab("whatif")}>What-if simulator</button>
                 </div>
                 <div className="view-switch" role="tablist" aria-label="Visualization">
                   <button role="tab" aria-selected={displayMode === "2d"} className={displayMode === "2d" ? "active" : ""}
@@ -321,6 +371,16 @@ function App() {
                       <output>{wallTransparency}%</output>
                     </label>
                   </div>
+                )}
+                {activeTab === "whatif" && (
+                  <WhatIfPanel options={whatIfOptions} scenario={scenario} setScenario={setScenario}
+                    onRun={runScenario} onReset={resetScenario} busy={operation === "scenario"}
+                    scenarioResult={scenarioResult} displayMode={displayMode} />
+                )}
+                {activeTab === "whatif" && displayMode === "3d" && (
+                  <p className="help-text">{scenarioResult
+                    ? "3D view of the what-if scenario. Closed doors are drawn as wall."
+                    : "3D view of the official solution. Run a scenario to see it here."}</p>
                 )}
               </>
             )}

@@ -50,7 +50,8 @@ cable-ring/
 │   ├── validation.py      every hard rule, independent of the solver
 │   ├── export_json.py     slide-8 output schema (Pydantic)
 │   ├── visualization.py   overlay: zones, hubs, nodes, order, rings, violations in red
-│   └── view3d.py          interactive 3D model (Plotly) + standalone HTML export
+│   ├── view3d.py          interactive 3D model (Plotly) + standalone HTML export
+│   └── whatif.py          what-if scenarios: close doors, change rules/weights, move a hub
 ├── tools/make_inputs.py   dataset plans → per-plan input JSON files
 ├── tests/                 metric examples from slide 7, validator, end-to-end
 ├── data/                  ResPlan.pkl, split.json (not in git)
@@ -70,6 +71,30 @@ file that opens offline in any browser, for the presentation.
 From the command line: `python start_here.py 42` also writes `outputs/PLAN_00042_3d.html`,
 and `python batch.py --count 10 --html3d` writes one per plan. Heights are presentation
 only; scoring uses the 2D polylines. Code: `cablering/view3d.py`.
+
+## What-if simulator
+
+After **Generate**, open the **What-if simulator** tab to change the building or the rules
+and watch the design respond:
+
+| Control | What happens |
+|---|---|
+| **Close a door** (D1, D2, ... tagged on the official plan) | The door becomes wall: no cable through it, and the two rooms lose that zone link |
+| **Rules** | Max area / nodes per hub, hub-node clearance, zones through bathrooms |
+| **Score weights** | Crossing and bend weights in J (the official design is re-scored with the same weights for a fair comparison) |
+| **Move a hub** | Put a hub in a chosen room (+ nudge). Zones stay, that ring is re-routed through it; bad spots show up as red violations |
+
+Every difference from the official benchmark is listed in a yellow banner, so a scenario is
+never mistaken for a submitted result. The result shows an official-vs-scenario table
+(worse in red, better in green), both drawings side by side, and the scenario in 3D.
+A hand-placed hub has never beaten the optimizer's hub in our tests, which makes a good demo.
+
+API: `GET /api/plans/{plan_key}/whatif` (doors, rooms, hubs, labelled door map) and
+`POST /api/whatif` (run a scenario). Code: `cablering/whatif.py`,
+`optimizer.solve_with_fixed_hubs`, `frontend/src/WhatIf.jsx`.
+
+If port 8000 is busy, run the backend elsewhere and point the frontend at it:
+`set API_PORT=8001` before `npm run dev`.
 
 ## How the engine works
 
