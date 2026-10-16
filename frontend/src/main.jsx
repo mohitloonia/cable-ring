@@ -92,6 +92,7 @@ function App() {
   const [error, setError] = useState("");
   const [assistantInput, setAssistantInput] = useState("");
   const [chatMessages, setChatMessages] = useState([]);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [suggestions, setSuggestions] = useState(INITIAL_SUGGESTIONS);
   const [assistantProgress, setAssistantProgress] = useState("");
   const assistantRequestActive = useRef(false);
@@ -520,57 +521,6 @@ function App() {
 
             {!result && <div className="notice info-notice">This is the empty floor plan. Press <strong>Generate</strong> in the sidebar to place hubs, nodes and cable.</div>}
 
-            <section className="assistant-panel" aria-labelledby="assistant-heading">
-              <h2 id="assistant-heading">Cable Ring Assistant</h2>
-              <div className="chat-history" aria-live="polite" aria-relevant="additions text">
-                {chatMessages.length === 0 && (
-                  <>
-                    <p className="assistant-intro">Hi! I’m your Cable Ring Assistant. I can explain your current layout,
-                      ask the existing optimizer to improve it, compare designs, and help you understand constraints.
-                      What would you like to explore?</p>
-                    {!assistantAiAvailable && (
-                      <p className="assistant-ai-notice">
-                        Open-ended AI answers are not configured on this server. Supported design commands still work.
-                      </p>
-                    )}
-                  </>
-                )}
-                {chatMessages.map((message, index) => (
-                  <div className={`chat-message ${message.role}`} key={`${index}-${message.role}`}>
-                    <p>{message.content}</p>
-                  </div>
-                ))}
-                {operation === "assistant" && <p className="assistant-loading" role="status">{assistantProgress}</p>}
-              </div>
-              {suggestions.length > 0 && (
-                <div className="assistant-suggestions" aria-label="Suggested questions">
-                  {suggestions.map((suggestion) => (
-                    <button key={suggestion} type="button" className="suggestion-button"
-                      disabled={operation !== ""} onClick={() => sendAssistant(suggestion)}>
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <form className="assistant-form" onSubmit={(event) => {
-                event.preventDefault();
-                sendAssistant();
-              }}>
-                <textarea className="text-input" aria-label="Message the Cable Ring Assistant"
-                  placeholder="Message the assistant…" value={assistantInput}
-                  rows={2} disabled={operation !== ""}
-                  onChange={(event) => setAssistantInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      event.currentTarget.form.requestSubmit();
-                    }
-                  }} />
-                <button className="primary-button" type="submit"
-                  disabled={!assistantInput.trim() || operation !== ""}>Send</button>
-              </form>
-            </section>
-
             {metrics && (
               <>
                 <div className="metrics-grid">
@@ -689,6 +639,69 @@ function App() {
           </>
         )}
       </main>
+      {plan && !assistantOpen && (
+        <button className="assistant-launcher" type="button" aria-controls="assistant-drawer"
+          aria-expanded="false" onClick={() => setAssistantOpen(true)}>
+          AI Assistant
+        </button>
+      )}
+      {plan && assistantOpen && (
+        <section className="assistant-panel assistant-drawer" id="assistant-drawer"
+          role="dialog" aria-labelledby="assistant-heading">
+          <header className="assistant-drawer-header">
+            <h2 id="assistant-heading">Cable Ring Assistant</h2>
+            <button className="assistant-minimize" type="button" aria-label="Minimize assistant"
+              onClick={() => setAssistantOpen(false)}>Minimize</button>
+          </header>
+          <div className="chat-history" aria-live="polite" aria-relevant="additions text">
+            {chatMessages.length === 0 && (
+              <>
+                <p className="assistant-intro">Hi! I’m your Cable Ring Assistant. I can explain your current layout,
+                  ask the existing optimizer to improve it, compare designs, and help you understand constraints.
+                  What would you like to explore?</p>
+                {!assistantAiAvailable && (
+                  <p className="assistant-ai-notice">
+                    Open-ended AI answers are not configured on this server. Supported design commands still work.
+                  </p>
+                )}
+              </>
+            )}
+            {chatMessages.map((message, index) => (
+              <div className={`chat-message ${message.role}`} key={`${index}-${message.role}`}>
+                <p>{message.content}</p>
+              </div>
+            ))}
+            {operation === "assistant" && <p className="assistant-loading" role="status">{assistantProgress}</p>}
+          </div>
+          {suggestions.length > 0 && (
+            <div className="assistant-suggestions" aria-label="Suggested questions">
+              {suggestions.map((suggestion) => (
+                <button key={suggestion} type="button" className="suggestion-button"
+                  disabled={operation !== ""} onClick={() => sendAssistant(suggestion)}>
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          )}
+          <form className="assistant-form" onSubmit={(event) => {
+            event.preventDefault();
+            sendAssistant();
+          }}>
+            <textarea className="text-input" aria-label="Message the Cable Ring Assistant"
+              placeholder="Message the assistant…" value={assistantInput}
+              rows={2} disabled={operation !== ""}
+              onChange={(event) => setAssistantInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  event.currentTarget.form.requestSubmit();
+                }
+              }} />
+            <button className="primary-button" type="submit"
+              disabled={!assistantInput.trim() || operation !== ""}>Send</button>
+          </form>
+        </section>
+      )}
     </div>
   );
 }
