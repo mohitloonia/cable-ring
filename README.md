@@ -30,7 +30,7 @@ python batch.py --split test --count 300 --baseline   REM benchmark
 
 ```
 cable-ring/
-├── app.py                 FastAPI endpoints for plans, solving and floor-plan previews
+├── app.py                 FastAPI endpoints for plans, solving, previews and design assistant
 ├── frontend/              React + Vite interface
 ├── batch.py               parallel benchmark over many plans → outputs/batch/summary.csv
 ├── start_here.py          first-run check: libraries, dataset, one solved plan
@@ -48,6 +48,7 @@ cable-ring/
 │   ├── optimizer.py       the engine: zones → cycles → routes → improve → hubs → check
 │   ├── quality.py         quality engine: original first, then validated improvements only
 │   ├── relocate.py        node sliding (re-solve with zones fixed)
+│   ├── assistant.py       deterministic request parsing, explanations, comparisons and valid design history
 │   ├── metrics.py         L, X, O, B, J from polylines only (1 mm tolerance)
 │   ├── validation.py      every hard rule, independent of the solver
 │   ├── export_json.py     slide-8 output schema (Pydantic)
@@ -61,6 +62,61 @@ cable-ring/
 └── outputs/               results (not in git)
 ```
 
+## Natural-language design assistant
+
+After loading a plan and pressing **Generate**, use the assistant in the main
+interface to ask about the actual solution, request a new optimizer run, compare
+designs, undo the most recent valid version, or restore a saved version. Clickable
+starter prompts are available when a plan is loaded; after each reply, the assistant
+offers a few context-sensitive next steps. Examples:
+
+- "Why did you use two panels?"
+- "Reduce cable length by 10%."
+- "Find a design with fewer crossings."
+- "Compare this solution with the previous one."
+- "Undo the last change."
+
+The assistant is a conversational React UI backed by FastAPI (this project does
+not use Streamlit). When configured, a pretrained instruction-following model
+provides open-ended conversation and returns a strict, allowlisted action
+decision. The backend alone dispatches supported operations. Current and previous
+design facts are supplied separately from untrusted transcript text. Model
+responses cannot create routes, metrics, or validation results. Design changes
+still go through the existing optimizer, validator, and metric calculator, and
+only a fully valid candidate can become current.
+
+To enable AI conversation, copy `.env.example` to `.env` in the project root and
+set `OPENAI_API_KEY` to a key you provide. The key is read only by FastAPI and is
+never sent to the browser. `OPENAI_MODEL` selects the model (default
+`gpt-4o-mini`); optionally set `OPENAI_BASE_URL` for an OpenAI-compatible endpoint
+and `OPENAI_TIMEOUT_SECONDS` for the request timeout (default 30; maximum 120).
+Install dependencies with `python -m pip install -r requirements.txt`, then
+restart the API. Alternatively, set these variables in the server's environment
+instead of using a `.env` file. There is no model training or fine-tuning step.
+
+Without a working `OPENAI_API_KEY`, greetings, help, status checks, next-step
+suggestions, and supported optimizer/history commands remain available through
+the deterministic assistant. Recognized design questions also fall back to
+deterministic handling if the provider is unavailable. Other free-form requests
+report that the AI layer needs a working credential instead of pretending a
+model answered. Provider errors never discard a verified design. The
+optimizer's existing per-plan budget is unchanged; the assistant makes one
+solver call per optimization request.
+Valid design snapshots are kept in memory, isolated by the random plan-session
+key; design history lasts only for the backend process lifetime. A candidate is
+accepted only after the existing validator confirms it is valid. The original
+scoring formula and weights remain unchanged.
+
+The current optimizer always searches for the fewest feasible panels and does
+not expose a parameter for forcing an exact panel count. A panel-count request
+therefore triggers an actual solve and reports whether its result met the
+requested count, without claiming the count is impossible if it did not. The
+optimizer likewise has no objective-weight override or decision trace; requests
+to prioritize a metric rerun its existing search and compare the actual result,
+and explanations distinguish recorded facts from unrecorded alternatives.
+
+Competition capacity limits are 100 m² and 20 devices per panel. The API and UI
+cap the configurable device limit at 20; lower limits remain available.
 ## 3D view
 
 In the app, pick **3D view** after Generate: walls raised to room height (doors are
