@@ -129,17 +129,18 @@ candidate tried) and `improved_by` (which step won).
 
 **Results, full test split (1,632 unseen plans):**
 
-| | Original | Quality |
-|---|---|---|
-| Valid | 1,588 | 1,588 (the other 44 are unsolvable: 42 rooms > 100 m², 2 with no door) |
-| Better / same / **worse** than original | | 1,304 / 328 / **0** |
-| Mean J | 20.13 | **19.55 (−2.87 %)** |
-| Median J | 20.23 | 19.79 |
-| Total hubs | 2,840 | 2,838 |
-| Strict-valid | | 1,588 / 1,588 |
-| Time per plan | ~0.5 s | median 2.9 s, p95 10.5 s, max 32 s |
+| | Greedy baseline | Original | Quality |
+|---|---|---|---|
+| Valid | 1,582 | 1,588 | 1,588 (the other 44 are unsolvable: 42 rooms > 100 m², 2 with no door) |
+| Better / same / **worse** than original | | | 1,302 / 330 / **0** |
+| Mean J | 60.61 | 20.13 | **19.55 (−2.86 % vs original, −67.7 % vs greedy)** |
+| Median J | | 20.22 | 19.79 |
+| Total hubs | | 2,840 | 2,838 |
+| Strict-valid | | | 1,588 / 1,588 |
+| Cable inside a wall / window (independent audit) | | | **0** |
+| Time per plan | ~0.1 s | ~0.5 s | median 3.1 s, p95 11.1 s, max 30.4 s |
 
-Wins by step: wider bend-aware search 955 plans, node sliding 349 plans.
+Wins by step: wider bend-aware search 961 plans, node sliding 341 plans.
 (Dev set, 200 `val` plans, step by step: search + 2 cm hub −1.50 %, + bend-aware −2.16 %,
 + door lanes / both-sides doors −2.55 %, + node sliding −3.15 %.)
 
