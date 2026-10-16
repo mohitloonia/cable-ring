@@ -4,5 +4,8 @@ __pycache__/
 .pytest_cache/
 data/*.pkl
 outputs/
+.env
+.env.*
+!.env.example
 frontend/node_modules/
 frontend/dist/

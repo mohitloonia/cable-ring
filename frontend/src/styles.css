@@ -61,6 +61,23 @@ details > summary { cursor: pointer; list-style-position: inside; }
 .page-heading h1 { margin: 0 0 .25rem; font-size: 2.1rem; line-height: 1.2; font-weight: 700; }
 .page-heading p { margin: 0; color: #555761; }
 .plan-summary { margin: 0 0 1rem; line-height: 1.5; }
+.assistant-panel { width: min(100%, 920px); margin: 1.5rem auto; }
+.assistant-panel h2 { margin: 0 0 .8rem; font-size: 1.15rem; font-weight: 600; }
+.chat-history { min-height: 8rem; max-height: 55vh; overflow-y: auto; }
+.assistant-intro { margin: 1.5rem 0; color: var(--muted); text-align: center; }
+.assistant-ai-notice { margin: -.8rem 0 1rem; color: #785b11; font-size: .84rem; text-align: center; }
+.chat-message { width: fit-content; max-width: 86%; margin: .65rem 0; padding: .55rem .8rem; border-radius: .8rem; white-space: pre-wrap; }
+.chat-message p { margin: 0; line-height: 1.5; }
+.chat-message.user { margin-left: auto; background: #f0f2f6; }
+.chat-message.assistant { margin-right: auto; background: #eaf3fb; }
+.assistant-loading { margin: .6rem 0; color: var(--muted); font-size: .9rem; }
+.assistant-suggestions { display: flex; flex-wrap: wrap; gap: .45rem; margin: .6rem 0; }
+.suggestion-button { padding: .35rem .65rem; border: 1px solid #b8c8d8; border-radius: 1rem; background: #fff; color: #24527a; font-size: .84rem; }
+.suggestion-button:hover:not(:disabled) { border-color: #6f91ad; background: #f4f8fb; }
+.suggestion-button:disabled { opacity: .55; cursor: not-allowed; }
+.assistant-form { display: flex; gap: .55rem; margin-top: .7rem; }
+.assistant-form .text-input { flex: 1; min-width: 0; }
+.assistant-form textarea.text-input { min-height: 3.2rem; resize: vertical; line-height: 1.4; }
 .metrics-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .75rem; margin: 1.2rem 0 1.4rem; }
 .metric { min-width: 0; padding: .1rem .15rem; }
 .metric-label { color: #646773; font-size: .82rem; }
@@ -95,4 +112,6 @@ pre { overflow: auto; padding: 1rem; border-radius: .3rem; background: #f6f7f9; 
   .main-content { margin-left: 0; padding: 1.4rem 1rem 2rem; }
   .page-heading h1 { font-size: 1.75rem; }
   .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem .5rem; }
+  .assistant-form { align-items: stretch; }
+  .chat-message { max-width: 94%; }
 }
