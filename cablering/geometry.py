@@ -93,6 +93,18 @@ def door_axis(door: Polygon) -> tuple[np.ndarray, float, float, np.ndarray]:
     return u, width, thick, np.asarray(mrr.centroid.coords[0])
 
 
+def door_opening(door: Polygon, margin: float, extra: float = 0.02) -> Polygon:
+    """The gap in the wall itself: door width minus the margins, door thickness + `extra`."""
+    u, width, thick, ctr = door_axis(door)
+    w = width - 2 * margin
+    if w <= 0.02:
+        return EMPTY
+    v = np.array([-u[1], u[0]])
+    d = thick + extra
+    return Polygon([ctr + u * w / 2 + v * d / 2, ctr - u * w / 2 + v * d / 2,
+                    ctr - u * w / 2 - v * d / 2, ctr + u * w / 2 - v * d / 2])
+
+
 def door_passage(door: Polygon, wall_t: float, margin: float) -> Polygon:
     """Rectangle through the wall where cable may cross between two rooms.
 
@@ -132,6 +144,10 @@ def free_space(plan, G, margin: float):
         for ln in d["links"]:
             if ln["kind"] == "door":
                 p = door_passage(ln["geom"], plan.wall_thickness, margin)
+                # The passage reaches into both rooms; it must never overlap a wall or window
+                # (e.g. the end of a wall next to the door, or a wall drawn over part of the
+                # door). Walls always win: an overlapped door just gets narrower.
+                p = p.difference(obst_m)
             else:
                 # same strip width for router and checker, so router space is always
                 # inside the checker's legal space (only the obstacle margin differs)

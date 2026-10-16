@@ -96,7 +96,7 @@ function App() {
   const [assistantProgress, setAssistantProgress] = useState("");
   const assistantRequestActive = useRef(false);
   const [settings, setSettings] = useState({
-    max_nodes: 20,
+    max_nodes: 5,
     node_mode: "optimize",
     zone_via_other_rooms: false,
     time_budget_s: 30,
@@ -458,7 +458,7 @@ function App() {
               <label className="check-row">
                 <input type="checkbox" checked={settings.compare}
                   onChange={(event) => updateSetting("compare", event.target.checked)} />
-                <span>Also run the simple baseline (for comparison)</span>
+                <span>Also run the greedy baseline (for comparison)</span>
               </label>
             </div>
           </details>
@@ -583,6 +583,9 @@ function App() {
                   <button role="tab" aria-selected={activeTab === "optimized"} className={activeTab === "optimized" ? "active" : ""}
                     onClick={() => setActiveTab("optimized")}>Optimised</button>
                   {baseline && <button role="tab" aria-selected={activeTab === "baseline"} className={activeTab === "baseline" ? "active" : ""}
+                    onClick={() => setActiveTab("baseline")}
+                    title="Greedy baseline: region growing, nearest neighbour, greedy best-first paths (no Dijkstra)">
+                    Greedy baseline</button>}
                     onClick={() => setActiveTab("baseline")}>Baseline</button>}
                   {result.alternative_image && <button role="tab"
                     aria-selected={activeTab === "assistantAlternative"}

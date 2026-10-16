@@ -27,7 +27,7 @@ MIN_ROOM_AREA_M2 = 0.5
 class Config:
     # ---- hard rules ------------------------------------------------------
     max_area_m2: float = 100.0          # eligible-room area per hub
-    max_nodes: int = 20                 # nodes per hub. CONFIRM: slides say 5, brief says 20
+    max_nodes: int = 5                  # nodes per hub (set by the judges; was 20)
     clearance_m: float = 0.5            # hub (and chosen node) distance from walls
     tol_m: float = 1e-3                 # checker tolerance (1 mm)
 
@@ -55,14 +55,35 @@ class Config:
     min_open_passage_m: float = 0.6     # narrower wall-free contact is not a passage
     door_parallel_offset_m: float = 0.15  # extra lanes through doors (parallel runs)
     candidates_per_room: int = 10
-    hub_offset_m: float = 0.10          # one-room zone: hub this far from the node
-    top_partitions: int = 3             # zone splits that get full routing
-    zone_alternatives: int = 3          # alternative cycles tried per zone
-    reroute_passes: int = 3             # rip-up-and-reroute passes per design
     time_budget_s: float = 30.0         # per plan, after which the best design so far wins
+
+    # ---- engine ----------------------------------------------------------
+    # "quality":  run the original engine first (kept as the guaranteed fallback), then
+    #             the improvement steps below; keep a result only if it is valid and
+    #             better by (validity, hubs, J, area gap). Never worse than "original".
+    # "original": the frozen first engine, nothing else.
+    engine: str = "quality"
+    # Quality-engine settings. `as_original()` resets them to the frozen original.
+    hub_offset_m: float = 0.02          # one-room zone: hub this far from the node
+    top_partitions: int = 6             # zone splits that get full routing
+    zone_alternatives: int = 6          # alternative cycles tried per zone
+    reroute_passes: int = 4             # rip-up-and-reroute passes per design
+    door_links: str = "both_sides"      # "both_sides" (+ legacy links) | "legacy"
+    bend_aware: bool = True             # Held-Karp + routing count bends at nodes
+    extra_door_lanes: bool = True       # more legal crossing lanes through each door
+    relocate_trials: int = 6            # node-sliding re-solves per plan (0 = off)
+    strict_window_J: float = 0.10       # prefer strict-valid designs within this much J
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def as_original(self) -> "Config":
+        """The frozen original engine, with this config's rules and limits."""
+        from dataclasses import replace
+        return replace(self, engine="original", hub_offset_m=0.10, top_partitions=3,
+                       zone_alternatives=3, reroute_passes=3, door_links="legacy",
+                       bend_aware=False, extra_door_lanes=False, relocate_trials=0,
+                       strict_window_J=0.0)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Config":

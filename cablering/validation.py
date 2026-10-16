@@ -17,7 +17,7 @@ import math
 import shapely
 from shapely.geometry import LineString, Point
 
-from .geometry import clearance, clearance_obstacles, free_space
+from .geometry import clearance, clearance_obstacles, free_space, obstacles
 from .room_graph import build_room_graph, zone_connected
 
 
@@ -27,6 +27,9 @@ def validate(plan, out: dict, cfg, G=None, legal=None) -> dict:
     legal = legal if legal is not None else free_space(plan, G, 2 * tol)
     shapely.prepare(legal)
     obst = clearance_obstacles(plan, cfg.clearance_from_doors)
+    # independent of how the legal space is built: no cable may run inside a wall/window
+    solid = obstacles(plan).buffer(-tol)
+    shapely.prepare(solid)
     violations: list[dict] = []
     warnings: list[str] = []
 
@@ -105,7 +108,7 @@ def validate(plan, out: dict, cfg, G=None, legal=None) -> dict:
             for end, key in ((pl[0], s["from"]), (pl[-1], s["to"])):
                 if key in locs and math.dist(end, locs[key]) > tol:
                     bad("ring", f"{hid} leg {s['from']}->{s['to']} does not end at {key}", list(end))
-            _check_geometry(plan, h, s, legal, locs, tol, bad)
+            _check_geometry(plan, h, s, legal, locs, tol, bad, solid)
 
     for r in eligible:
         for n in nodes.values():
@@ -120,7 +123,17 @@ def validate(plan, out: dict, cfg, G=None, legal=None) -> dict:
     return {"valid": not violations, "violations": violations, "warnings": warnings}
 
 
-def _check_geometry(plan, h, s, legal, locs, tol, bad) -> None:
+def validate_strict(plan, out: dict, cfg) -> dict:
+    """Safety check, stricter than the rules: 5 mm tolerance, cable >= 3 cm from walls and
+    windows, door openings 3 cm narrower on each side. A design passing this is robust to
+    small differences between our checker and the organisers'."""
+    import dataclasses
+    strict = dataclasses.replace(cfg, tol_m=0.005)
+    G = build_room_graph(plan, cfg)
+    return validate(plan, out, strict, G, free_space(plan, G, 0.03))
+
+
+def _check_geometry(plan, h, s, legal, locs, tol, bad, solid=None) -> None:
     pl = s["polyline"]
     label = f"{h['hub_id']} leg {s['from']}->{s['to']}"
     for a, b in zip(pl, pl[1:]):
@@ -128,6 +141,13 @@ def _check_geometry(plan, h, s, legal, locs, tol, bad) -> None:
             bad("free_space", f"{label}: segment is not horizontal/vertical", [list(a), list(b)])
             continue
         seg = LineString([a, b]) if math.dist(a, b) > tol else None
+        if seg is not None and solid is not None and not solid.is_empty and seg.intersects(solid):
+            inside = seg.intersection(solid)
+            if inside.length > tol:
+                mid = inside.representative_point()
+                bad("free_space", f"{label}: runs {inside.length:.3f} m inside a wall or window",
+                    [mid.x, mid.y])
+                continue
         if seg is not None and not legal.covers(seg):
             off = seg.difference(legal)
             mid = off.representative_point() if not off.is_empty else seg.centroid

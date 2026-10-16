@@ -23,6 +23,28 @@ from cablering.export_json import write_output
 from cablering.input_loader import load_dataset, plan_from_input_dict, plan_from_raw, plan_id_for_index
 
 
+def _compare(new: dict, old: dict) -> str:
+    """better / same / worse, in the judges' order: validity, hubs, J."""
+    if bool(new["valid"]) != bool(old["valid"]):
+        return "better" if new["valid"] else "worse"
+    if not new["valid"]:
+        return "same"
+    if new["hub_count"] != old["hub_count"]:
+        return "better" if new["hub_count"] < old["hub_count"] else "worse"
+    if abs(new["cost_J"] - old["cost_J"]) <= 1e-6:
+        return "same"
+    return "better" if new["cost_J"] < old["cost_J"] else "worse"
+
+
+def _parse_set(items: list[str]) -> dict:
+    out = {}
+    for item in items or []:
+        key, _, value = item.partition("=")
+        default = getattr(Config(), key)
+        out[key] = (value.lower() in ("1", "true", "yes")) if isinstance(default, bool) else type(default)(value)
+    return out
+
+
 def run_one(job: dict) -> dict:
     cfg = Config.from_dict(job["cfg"])
     if "raw" in job:
@@ -48,6 +70,11 @@ def run_one(job: dict) -> dict:
                    J=m["cost_J"], L=m["total_length_m"], X=m["crossings"], O=m["overlap_m"], B=m["bends"],
                    time_s=s["time_s"], note=s.get("note", ""),
                    first_violation=(out["validation"]["violations"] or [{"message": ""}])[0]["message"])
+        if "original" in s:                       # quality engine: compare with the original
+            o = s["original"]
+            row.update(orig_valid=o["valid"], orig_hubs=o["hub_count"], orig_J=o["cost_J"],
+                       improved_by=s.get("improved_by", ""), strict_valid=s.get("strict_valid", ""),
+                       result=_compare(m, o))
         if job["baseline"]:
             b = solve(plan, cfg, baseline=True)
             row.update(baseline_valid=b["reported_metrics"]["valid"], baseline_J=b["reported_metrics"]["cost_J"])
@@ -67,9 +94,11 @@ def main() -> None:
     ap.add_argument("--png", action="store_true", help="save an overlay PNG per plan")
     ap.add_argument("--html3d", action="store_true", help="save an interactive 3D HTML per plan (~5 MB each)")
     ap.add_argument("--out", default=str(OUTPUT_DIR / "batch"))
+    ap.add_argument("--set", nargs="*", metavar="KEY=VALUE",
+                    help="override config, e.g. --set engine=original relocate_trials=0")
     args = ap.parse_args()
 
-    cfg = Config().to_dict()
+    cfg = {**Config().to_dict(), **_parse_set(args.set)}
     common = {"cfg": cfg, "out_dir": args.out, "png": args.png, "html3d": args.html3d,
               "baseline": args.baseline}
     if args.inputs:
@@ -114,6 +143,26 @@ def main() -> None:
         if both:
             gain = statistics.mean(1 - r["J"] / r["baseline_J"] for r in both if r["baseline_J"] > 0)
             print(f"optimised vs baseline: J {gain:.1%} lower on average ({len(both)} plans)")
+    cmp_rows = [r for r in rows if r.get("result")]
+    if cmp_rows:
+        counts = {k: sum(1 for r in cmp_rows if r["result"] == k) for k in ("better", "same", "worse")}
+        print(f"\nquality vs original: better {counts['better']}, same {counts['same']}, worse {counts['worse']}")
+        both = [r for r in cmp_rows if r.get("valid") and r.get("orig_valid")]
+        if both:
+            oj = statistics.mean(r["orig_J"] for r in both)
+            qj = statistics.mean(r["J"] for r in both)
+            print(f"mean J original {oj:.4f} -> quality {qj:.4f} ({(qj - oj) / oj:+.2%});  "
+                  f"median {statistics.median(r['orig_J'] for r in both):.4f} -> "
+                  f"{statistics.median(r['J'] for r in both):.4f}")
+            print(f"hubs original {sum(r['orig_hubs'] for r in both)} -> quality {sum(r['hubs'] for r in both)}")
+        won = {}
+        for r in cmp_rows:
+            if r["result"] == "better":
+                won[r["improved_by"]] = won.get(r["improved_by"], 0) + 1
+        print("improvements by step:", won)
+        strict = [r for r in cmp_rows if r.get("strict_valid") != ""]
+        if strict:
+            print(f"strict-valid: {sum(1 for r in strict if r['strict_valid'] is True)}/{len(strict)}")
     bad = [r for r in rows if not r.get("valid")]
     for r in bad[:10]:
         print("  INVALID", r["plan_id"], r.get("error") or r.get("first_violation"))

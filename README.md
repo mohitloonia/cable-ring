@@ -46,6 +46,8 @@ cable-ring/
 │   ├── routing.py         axis-aligned routing graph + bend-aware Dijkstra + penalties
 │   ├── sequencing.py      exact ring order + node choice (Held-Karp, generalised TSP)
 │   ├── optimizer.py       the engine: zones → cycles → routes → improve → hubs → check
+│   ├── quality.py         quality engine: original first, then validated improvements only
+│   ├── relocate.py        node sliding (re-solve with zones fixed)
 │   ├── assistant.py       deterministic request parsing, explanations, comparisons and valid design history
 │   ├── metrics.py         L, X, O, B, J from polylines only (1 mm tolerance)
 │   ├── validation.py      every hard rule, independent of the solver
@@ -160,6 +162,53 @@ API: `GET /api/plans/{plan_key}/geometry` (plan shapes for the editor),
 If port 8000 is busy, run the backend elsewhere and point the frontend at it:
 `set API_PORT=8001` before `npm run dev`.
 
+## Quality engine (default)
+
+`solve()` runs the **original engine first** and keeps its validated result as the
+guaranteed fallback, then tries improvements and keeps one only if it is valid and better
+by (validity, hubs, J, area gap). So the result is **never worse than the original**.
+`Config(engine="original")` (or `cfg.as_original()`) gives exactly the first engine.
+
+| Step | What it does | Code |
+|---|---|---|
+| Wider search | 6 zone splits × 6 alternative cycles per zone, 4 reroute passes | `config.py` |
+| Bend-aware ordering | routing graph with 4 travel directions (a reversal costs a bend); Held-Karp over (rooms, point, arrival direction) counts the bends at nodes | `routing.DirRoutingGraph`, `sequencing.best_cycles_dir` |
+| Junction-aware rerouting | each leg is rerouted knowing how the neighbouring legs arrive and leave | `optimizer._route_leg` |
+| Door lanes | extra crossing lanes every 0.10 m through doors (≥ wall margin + 0.05 m from the frame), ±0.15 / 0.30 m through openings | `optimizer.guide_lines` |
+| Both-sides doors | also links the rooms found straight across each door (added to the old links) | `room_graph._door_links_both_sides` |
+| One-room zones | hub 2 cm from the node (was 10 cm) | `config.hub_offset_m` |
+| Node sliding | moves nodes onto cable already passing through their room / onto adjacent corners, re-solved with zones fixed | `relocate.py` |
+| Strict check | among designs within 0.10 J of the best, prefer one that passes a stricter check (5 mm tolerance, 3 cm wall margin, narrower doors) | `validation.validate_strict` |
+
+Each output's `solver` section shows `original` (the fallback's metrics), `steps` (every
+candidate tried) and `improved_by` (which step won).
+
+**Results, full test split (1,632 unseen plans), max 5 nodes and 100 m² per hub:**
+(Identical to the earlier 20-node run: on the test split the 100 m² limit always binds
+first, so no hub ever needed more than 5 nodes. Across all 17,000 plans the 5-node rule
+changes 57 homes with 6+ small rooms, e.g. PLAN_16605 / 09782 / 05142 in `inputs/`.)
+
+| | Greedy baseline | Original | Quality |
+|---|---|---|---|
+| Valid | 1,582 | 1,588 | 1,588 (the other 44 are unsolvable: 42 rooms > 100 m², 2 with no door) |
+| Better / same / **worse** than original | | | 1,302 / 330 / **0** |
+| Mean J | 60.61 | 20.13 | **19.55 (−2.86 % vs original, −67.7 % vs greedy)** |
+| Median J | | 20.22 | 19.79 |
+| Total hubs | | 2,840 | 2,838 |
+| Strict-valid | | | 1,588 / 1,588 |
+| Cable inside a wall / window (independent audit) | | | **0** |
+| Time per plan | ~0.1 s | ~0.5 s | median 3.1 s, p95 11.1 s, max 30.4 s |
+
+Wins by step: wider bend-aware search 961 plans, node sliding 341 plans.
+(Dev set, 200 `val` plans, step by step: search + 2 cm hub −1.50 %, + bend-aware −2.16 %,
++ door lanes / both-sides doors −2.55 %, + node sliding −3.15 %.)
+
+Benchmark any change against the original:
+`python batch.py --split val --count 200 --out outputs/dev` prints better / same / worse,
+mean and median J and improvements by step; `--set key=value` switches a step off or on
+(e.g. `--set relocate_trials=0 bend_aware=false`).
+Door-link audit against the dataset's own graph: `python tools/audit_links.py --split test`.
+
 ## How the engine works
 
 1. **Load + scale.** `scale = sqrt(inner.area / area)` (slide 4), coordinates ÷ scale.
@@ -212,7 +261,7 @@ All are switches in `cablering/config.py`:
 
 | Setting | Current | Question |
 |---|---|---|
-| `max_nodes` | 20 | Brief says 20 per panel, slides say 5 per hub |
+| `max_nodes` | **5** | Set by the judges: at most 5 nodes per hub, together with the 100 m² limit (was 20) |
 | `node_mode` | `optimize` | Are node points fixed inputs (`fixed`) or ours to choose? |
 | `zone_via_other_rooms` | False | May a zone connect through a bathroom / non-zone room? |
 | `wall_margin_m` | 0.05 | How close may cable run to a wall? |
