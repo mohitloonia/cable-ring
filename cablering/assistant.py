@@ -388,8 +388,12 @@ def handle_request(
     state: DesignHistory,
     request: DesignRequest,
     optimizer: Callable = solve,
+    *,
+    current_override: dict | None = None,
+    previous_override: dict | None = None,
 ) -> dict:
-    current = state.current
+    current = state.current if current_override is None else current_override
+    previous = state.previous() if current_override is None else previous_override
     if request.intent == Intent.GREETING:
         response = "Hi! I can explain your current layout, check its validation status, ask the existing optimizer to search for improvements, and compare, undo, or restore valid designs."
         if current is None:
@@ -464,7 +468,6 @@ def handle_request(
 
     if request.intent == Intent.EXPLAIN:
         if request.compare_metric is not None:
-            previous = state.previous()
             if previous is None:
                 return {"response": "I can see the current metric, but there is no earlier valid design "
                         "stored to compare it with.",
@@ -485,7 +488,6 @@ def handle_request(
         return {"response": explain_solution(plan, current, cfg, request.message, request.scope),
                 "output": current, "comparison": None, "changed": False}
     if request.intent == Intent.COMPARE:
-        previous = state.previous()
         if previous is None:
             return {"response": "There is no earlier valid version to compare with this design.",
                     "output": current, "comparison": None, "changed": False}

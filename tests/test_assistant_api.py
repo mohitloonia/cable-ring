@@ -13,6 +13,7 @@ from app import (
 )
 from cablering.assistant import DesignRequest, Intent, Objective
 from cablering.conversation import ModelDecision
+from cablering.input_loader import plan_from_index
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +47,35 @@ def test_assistant_api_uses_plan_session_and_returns_restorable_design(two_room_
         plans.pop(plan_key, None)
         design_histories.pop(plan_key, None)
         plan_configs.pop(plan_key, None)
+
+
+def test_assistant_explains_selected_greedy_baseline(dataset):
+    plan_key = uuid.uuid4().hex
+    plan = plan_from_index(67, dataset)
+    plans[plan_key] = plan
+    try:
+        solved = solve_endpoint(SolveRequest(
+            plan_key=plan_key, compare=True, time_budget_s=5
+        ))
+        greedy = solved["baseline"]
+        assert greedy is not None
+        assert greedy["reported_metrics"]["total_length_m"] != solved["output"]["reported_metrics"]["total_length_m"]
+
+        answer = assistant_endpoint(AssistantRequest(
+            plan_key=plan_key,
+            message="Explain my current design.",
+            view="greedy_baseline",
+        ))
+
+        expected_length = greedy["reported_metrics"]["total_length_m"]
+        assert answer["output"] == greedy
+        assert f"{expected_length:.3f} m" in answer["response"]
+        assert design_histories[plan_key].current == solved["output"]
+    finally:
+        plans.pop(plan_key, None)
+        design_histories.pop(plan_key, None)
+        plan_configs.pop(plan_key, None)
+        app_module.results.pop(plan_key, None)
 
 
 def test_conversation_accepts_consecutive_messages_and_context(two_room_plan):

@@ -320,6 +320,7 @@ function App() {
         body: JSON.stringify({
           plan_key: plan.plan_key,
           message: text,
+          view: activeTab === "baseline" ? "greedy_baseline" : "optimized",
           conversation: chatMessages.slice(-28).map((turn) => ({
             ...turn,
             content: turn.content.slice(-4000),
@@ -328,7 +329,7 @@ function App() {
       });
       setChatMessages((current) => [...current, { role: "assistant", content: answer.response }]);
       setSuggestions(followUpSuggestions(text, answer.response, answer));
-      if (answer.output) {
+      if (answer.output && answer.changed) {
         setResult((current) => ({
           ...current,
           output: answer.output,
@@ -337,6 +338,8 @@ function App() {
           output_json: answer.output_json,
         }));
         setActiveTab("optimized");
+      } else if (answer.alternative_image) {
+        setResult((current) => current && ({ ...current, alternative_image: answer.alternative_image }));
       }
     } catch (reason) {
       setChatMessages((current) => [...current, {
@@ -584,9 +587,8 @@ function App() {
                     onClick={() => setActiveTab("optimized")}>Optimised</button>
                   {baseline && <button role="tab" aria-selected={activeTab === "baseline"} className={activeTab === "baseline" ? "active" : ""}
                     onClick={() => setActiveTab("baseline")}
-                    title="Greedy baseline: region growing, nearest neighbour, greedy best-first paths (no Dijkstra)">
+                    title="Greedy baseline: cost-guided region growing, multi-start nearest neighbour, bend-aware shortest paths">
                     Greedy baseline</button>}
-                    onClick={() => setActiveTab("baseline")}>Baseline</button>}
                   {result.alternative_image && <button role="tab"
                     aria-selected={activeTab === "assistantAlternative"}
                     className={activeTab === "assistantAlternative" ? "active" : ""}

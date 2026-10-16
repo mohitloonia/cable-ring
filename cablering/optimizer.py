@@ -397,8 +397,8 @@ def solve(plan, cfg: Config | None = None, baseline: bool = False) -> dict:
 
     cfg.engine == "quality" (default): original engine first, then improvements, never
     worse. cfg.engine == "original": the original engine only.
-    baseline=True: the greedy baseline (region growing, nearest neighbour, greedy
-    best-first paths; no Dijkstra, no Held-Karp), the reference the judges compare with.
+    baseline=True: the greedy baseline (region growing, multi-start nearest neighbour,
+    bend-aware shortest paths), without exhaustive zone or ring-order search.
     """
     cfg = cfg or Config()
     if baseline:

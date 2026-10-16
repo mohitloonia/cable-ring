@@ -87,6 +87,7 @@ class AssistantRequest(BaseModel):
     plan_key: str
     message: str = Field(min_length=1, max_length=8000)
     conversation: list[ConversationMessage] = Field(default_factory=list, max_length=30)
+    view: Literal["optimized", "greedy_baseline"] = "optimized"
 
 
 def _image_data(plan, output: dict, title: str | None = None, **draw_options) -> str:
@@ -235,19 +236,31 @@ def assistant(request: AssistantRequest) -> dict:
     cfg = plan_configs.get(request.plan_key, Config())
     conversation = [message.model_dump() for message in request.conversation]
     parsed = parse_request(request.message, conversation)
+    greedy_output = (results.get(request.plan_key) or {}).get("baseline")
+    use_greedy_view = request.view == "greedy_baseline" and greedy_output is not None
+    selected_output = greedy_output if use_greedy_view else history.current
+    selected_previous = history.current if use_greedy_view else history.previous()
+    view_overrides = (
+        {"current_override": selected_output, "previous_override": selected_previous}
+        if use_greedy_view else {}
+    )
     local_intents = {Intent.GREETING, Intent.HELP, Intent.STATUS, Intent.NEXT_STEPS}
+    read_only_intents = local_intents | {Intent.EXPLAIN, Intent.COMPARE, Intent.CLARIFY, Intent.UNSUPPORTED}
     if parsed.intent in local_intents:
-        result = handle_request(plan, cfg, history, parsed)
+        result = handle_request(plan, cfg, history, parsed, **view_overrides)
     elif conversation_ai.is_configured():
-        current = history.current
-        previous = history.previous()
+        current = selected_output
+        previous = selected_previous
         context = conversation_ai.design_context(plan, current, previous, cfg)
         try:
             decision = conversation_ai.interpret_message(request.message, conversation, context)
         except conversation_ai.ConversationError as error:
             logger.info("AI conversation request could not be completed: %s", error)
             if parsed.intent != Intent.CLARIFY:
-                result = handle_request(plan, cfg, history, parsed)
+                result = handle_request(
+                    plan, cfg, history, parsed,
+                    **(view_overrides if parsed.intent in read_only_intents else {}),
+                )
                 if parsed.intent in {
                     Intent.OPTIMIZE,
                     Intent.CONSTRAIN,
@@ -346,7 +359,10 @@ def assistant(request: AssistantRequest) -> dict:
                     "changed": False,
                 }
     else:
-        result = handle_request(plan, cfg, history, parsed)
+        result = handle_request(
+            plan, cfg, history, parsed,
+            **(view_overrides if parsed.intent in read_only_intents else {}),
+        )
         if parsed.intent.value == "clarify":
             result["response"] = (
                 "Open-ended AI conversation is not configured. Set OPENAI_API_KEY on the server "

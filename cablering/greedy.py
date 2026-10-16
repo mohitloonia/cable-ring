@@ -1,17 +1,15 @@
 """Greedy baseline: every decision is the best-looking choice right now, never revisited.
 
-  zones     greedy region growing: seed = biggest unassigned room; repeatedly add the
-            biggest door-connected room that still fits (area / node limits); when
-            nothing fits, start a new hub
+    zones     greedy region growing: seed = biggest unassigned room; add the nearest
+                        feasible room, then the room giving the cheapest expanded greedy tour
   nodes     the centre of each room (deepest point >= clearance from walls)
-  order     nearest neighbour: from the zone's first room, always go to the closest
-            unvisited node, then back
-  paths     greedy best-first search: always step towards the target; no Dijkstra,
-            no bend or overlap awareness
+    order     nearest neighbour from each possible start; keep the cheapest closed tour
+    paths     bend-aware shortest legal path for each greedy leg
   hub       first valid straight spot on the ring's own cable
 
 It obeys every hard rule (doors only, connected zones, capacity), so it is a fair,
-valid reference showing what the optimised engine adds. No Dijkstra or Held-Karp is used.
+valid reference showing what the optimised engine adds. It does not search alternate
+zone splits or ring orders, or reroute legs to reduce crossings and overlap.
 """
 from __future__ import annotations
 
@@ -57,7 +55,14 @@ def _eligible_neighbours(G, room: str, eligible: set[str], via_other: bool) -> s
     return found
 
 
-def greedy_zones(plan, G, cfg) -> list[list[str]]:
+def _zone_cycle_cost(router, room_cands, rooms: list[str]) -> float:
+    cands = [room_cands[r][0] for r in rooms]
+    order = nearest_neighbour_order(router, cands)
+    tv = router.term_vid
+    return sum(router.route(tv[a], tv[b])[0] for a, b in zip(order, order[1:] + order[:1]))
+
+
+def greedy_zones(plan, G, cfg, router=None, room_cands=None) -> list[list[str]]:
     area = {r.id: r.area for r in plan.eligible_rooms}
     eligible = set(area)
     unassigned = set(eligible)
@@ -73,7 +78,15 @@ def greedy_zones(plan, G, cfg) -> list[list[str]]:
                     if total + area[r] <= cfg.max_area_m2 + cfg.tol_m and len(zone) < cfg.max_nodes]
             if not fits:
                 break
-            pick = max(fits, key=lambda r: (area[r], r))     # biggest that still fits
+            if router is None or room_cands is None:
+                pick = max(fits, key=lambda r: (area[r], r))
+            elif len(zone) == 1:
+                source = router.term_vid[room_cands[zone[0]][0]]
+                pick = min(fits, key=lambda r: router.route(
+                    source, router.term_vid[room_cands[r][0]])[0])
+            else:
+                pick = min(fits, key=lambda r: _zone_cycle_cost(
+                    router, room_cands, zone + [r]))
             zone.append(pick)
             total += area[pick]
             unassigned.discard(pick)
@@ -81,32 +94,30 @@ def greedy_zones(plan, G, cfg) -> list[list[str]]:
     return zones
 
 
-def _path_length(router, verts) -> float:
-    if not verts:
-        return np.inf
-    xs, ys = router.vx[verts], router.vy[verts]
-    return float(np.abs(np.diff(xs)).sum() + np.abs(np.diff(ys)).sum())
-
-
 def nearest_neighbour_order(router, cands: list[int]) -> list[int]:
-    """Start at the first candidate; always walk to the closest unvisited one."""
+    """Build nearest-neighbour tours from each start and keep the cheapest closure."""
     tv = router.term_vid
-    order, left = [cands[0]], list(cands[1:])
-    while left:
-        here = tv[order[-1]]
-        nxt = min(left, key=lambda c: _path_length(router, router.route_greedy(here, tv[c])))
-        order.append(nxt)
-        left.remove(nxt)
-    return order
+    costs = {(a, b): router.route(tv[a], tv[b])[0] for a in cands for b in cands if a != b}
+    best_order, best_cost = cands, np.inf
+    for start in cands:
+        order, left = [start], set(cands) - {start}
+        while left:
+            here = order[-1]
+            nxt = min(left, key=lambda c: costs[here, c])
+            order.append(nxt)
+            left.remove(nxt)
+        total = sum(costs[a, b] for a, b in zip(order, order[1:])) + costs[order[-1], order[0]]
+        if total < best_cost:
+            best_order, best_cost = order, total
+    return best_order
 
 
 def solve_greedy(plan, cfg) -> dict:
     t0 = time.time()
-    cfg = cfg.as_original()                   # simple geometry settings for the reference
     ctx = _context(plan, cfg)
     elig = plan.eligible_rooms
     info = {"mode": "greedy baseline", "node_mode": "center",
-            "algorithms": "greedy region growing, nearest neighbour, greedy best-first search",
+            "algorithms": "greedy region growing, nearest neighbour, bend-aware shortest paths",
             "hub_lower_bound": lower_bound([r.area for r in elig], cfg) if elig else 0,
             "zone_splits_feasible": 1, "designs_evaluated": 1,
             "fallback_rooms": sorted(ctx.fallback_rooms),
@@ -120,7 +131,7 @@ def solve_greedy(plan, cfg) -> dict:
         return _infeasible(ctx, f"rooms {too_big} alone exceed {cfg.max_area_m2} m2", info, t0)
 
     router = ctx.router
-    blocks = greedy_zones(plan, ctx.G, cfg)
+    blocks = greedy_zones(plan, ctx.G, cfg, router, ctx.room_cands)
     plans, legs = [], []
     for zi, rooms in enumerate(blocks):
         cands = [ctx.room_cands[r][0] for r in rooms]
@@ -137,9 +148,24 @@ def solve_greedy(plan, cfg) -> dict:
             continue
         blocked = np.zeros(router.N, dtype=bool)
         blocked[list(terminals - {a, b})] = True
-        leg.verts = router.route_greedy(a, b, blocked) or router.route_greedy(a, b)
+        _, leg.verts = router.route(a, b, blocked=blocked)
+        if leg.verts is None:
+            _, leg.verts = router.route(a, b)
         leg.segs = router.segments_of(leg.verts) if leg.verts else []
 
     out = finalize(ctx, Design(blocks, plans, legs, {}))
     report = validate(plan, out, cfg, ctx.G, ctx.legal)
+    if not report["valid"]:
+        for leg in legs:
+            a, b = router.term_vid[leg.a], router.term_vid[leg.b]
+            if a < 0 or b < 0:
+                continue
+            blocked = np.zeros(router.N, dtype=bool)
+            blocked[list(terminals - {a, b})] = True
+            leg.verts = router.route_greedy(a, b, blocked) or router.route_greedy(a, b)
+            leg.segs = router.segments_of(leg.verts) if leg.verts else []
+        fallback = finalize(ctx, Design(blocks, plans, legs, {}))
+        fallback_report = validate(plan, fallback, cfg, ctx.G, ctx.legal)
+        if fallback_report["valid"]:
+            out, report = fallback, fallback_report
     return _finish(ctx, out, report, info, t0)

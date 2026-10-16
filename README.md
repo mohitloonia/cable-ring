@@ -190,14 +190,14 @@ changes 57 homes with 6+ small rooms, e.g. PLAN_16605 / 09782 / 05142 in `inputs
 
 | | Greedy baseline | Original | Quality |
 |---|---|---|---|
-| Valid | 1,582 | 1,588 | 1,588 (the other 44 are unsolvable: 42 rooms > 100 m², 2 with no door) |
+| Valid | 1,583 (5 additional failures on optimizer-valid plans) | 1,588 | 1,588 (the other 44 are unsolvable: 42 rooms > 100 m², 2 with no door) |
 | Better / same / **worse** than original | | | 1,302 / 330 / **0** |
-| Mean J | 60.61 | 20.13 | **19.55 (−2.86 % vs original, −67.7 % vs greedy)** |
-| Median J | | 20.22 | 19.79 |
-| Total hubs | | 2,840 | 2,838 |
+| Mean J | 49.48 | 20.13 | **19.55 (−2.86 % vs original, −60.2 % vs greedy on shared valid plans)** |
+| Median J | 50.38 | 20.22 | 19.79 |
+| Total hubs | not recorded | 2,840 | 2,838 |
 | Strict-valid | | | 1,588 / 1,588 |
 | Cable inside a wall / window (independent audit) | | | **0** |
-| Time per plan | ~0.1 s | ~0.5 s | median 3.1 s, p95 11.1 s, max 30.4 s |
+| Time per plan | not recorded | ~0.5 s (prior run) | mean 1.97 s, median 1.38 s, p95 5.07 s, max 21.68 s |
 
 Wins by step: wider bend-aware search 961 plans, node sliding 341 plans.
 (Dev set, 200 `val` plans, step by step: search + 2 cm hub −1.50 %, + bend-aware −2.16 %,
@@ -245,9 +245,9 @@ Door-link audit against the dataset's own graph: `python tools/audit_links.py --
 | | |
 |---|---|
 | Valid | **1,588 / 1,588 solvable plans (100 %)**. The other 44 cannot be solved by anyone: 42 have a single room > 100 m², 2 have a room with no door (organisers exclude such plans) |
-| Hubs at the area lower bound | 1,220 / 1,588. The rest are forced up by zone connectivity (e.g. every bedroom opens only onto the living room) |
+| Hubs at the area lower bound | 1,222 / 1,588. The rest are forced up by zone connectivity (e.g. every bedroom opens only onto the living room) |
 | Mean J | 20.1 |
-| Optimised vs simple baseline | J **58.7 % lower** on average |
+| Optimised vs simple baseline | J **60.2 % lower** on average across the 1,583 plans where both are valid |
 | Crossings | 16 in total over 1,588 plans; mean overlap 0.08 m per plan |
 | Time per plan | 0.5 s mean, < 5 s max |
 

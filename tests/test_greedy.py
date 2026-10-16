@@ -1,4 +1,4 @@
-"""Greedy baseline: valid, capacity-respecting, and really greedy (no Dijkstra)."""
+"""Greedy baseline: valid, capacity-respecting, and heuristic rather than exhaustive."""
 import pytest
 
 import cablering.routing as routing
@@ -9,20 +9,29 @@ from cablering.optimizer import solve
 from cablering.room_graph import build_room_graph, zone_connected
 
 
-def _no_dijkstra(*args, **kwargs):
-    raise AssertionError("the greedy baseline must not run Dijkstra")
+def _no_greedy_route(*args, **kwargs):
+    raise AssertionError("the greedy baseline must use bend-aware shortest paths")
 
 
-def test_greedy_never_calls_dijkstra(two_room_plan, monkeypatch):
-    monkeypatch.setattr(routing, "dijkstra", _no_dijkstra)
+def test_greedy_uses_shortest_paths(two_room_plan, monkeypatch):
+    monkeypatch.setattr(routing.RoutingGraph, "route_greedy", _no_greedy_route)
     out = solve_greedy(two_room_plan, Config())
     assert out["validation"]["valid"], out["validation"]["violations"]
     assert "greedy" in out["solver"]["mode"]
+    assert "shortest paths" in out["solver"]["algorithms"]
 
 
 def test_baseline_flag_uses_greedy(two_room_plan):
     out = solve(two_room_plan, Config(), baseline=True)
     assert out["solver"]["mode"] == "greedy baseline"
+
+
+def test_baseline_plan_69_matches_reference_metrics(dataset):
+    plan = plan_from_index(69, dataset)
+    out = solve_greedy(plan, Config())
+    metrics = out["reported_metrics"]
+    assert metrics["total_length_m"] == pytest.approx(27.8651)
+    assert metrics["cost_J"] == pytest.approx(43.313)
 
 
 def test_greedy_zones_respect_capacity_and_doors(two_room_plan):
@@ -35,11 +44,10 @@ def test_greedy_zones_respect_capacity_and_doors(two_room_plan):
         assert sum(two_room_plan.room(r).area for r in z) <= 30 + 1e-6
 
 
-@pytest.mark.parametrize("index", [0, 2, 42, 593])
-def test_greedy_is_valid_and_costs_more_than_optimised(dataset, index, monkeypatch):
+@pytest.mark.parametrize("index", [0, 2, 42, 69, 236, 593])
+def test_greedy_is_valid_and_costs_more_than_optimised(dataset, index):
     plan = plan_from_index(index, dataset)
     best = solve(plan, Config(relocate_trials=0))
-    monkeypatch.setattr(routing, "dijkstra", _no_dijkstra)
     greedy = solve_greedy(plan, Config())
     assert greedy["validation"]["valid"], greedy["validation"]["violations"]
     assert greedy["reported_metrics"]["hub_count"] >= best["reported_metrics"]["hub_count"]
