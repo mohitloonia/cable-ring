@@ -222,6 +222,7 @@ def solve(request: SolveRequest) -> dict:
         "baseline_image": _image_data(plan, baseline, f"{plan.plan_id} (baseline)") if baseline else None,
         "output_json": check_schema(output).model_dump_json(by_alias=True, indent=2),
         "versions": history.list_versions(),
+        "plotly_asset_url": PLOTLY_ASSET_URL,
     }
 
 
@@ -395,8 +396,6 @@ def _is_hypothetical_action(message: str, action: str) -> bool:
         r"\bif\s+(?:we|i|you)\s+(?:reduc(?:e|ed)|shorten|optimi[sz]e|use|try|undo|restore)\b",
         text,
     ))
-        "plotly_asset_url": PLOTLY_ASSET_URL,
-    }
 
 
 # --------------------------------------------------------------------------- #

@@ -294,7 +294,6 @@ function App() {
         body: JSON.stringify({ plan_key: plan.plan_key, ...settings }),
       });
       setResult(solved);
-      }));
       resetWhatIf();
       setActiveTab("optimized");
       setDisplayMode("2d");
@@ -354,12 +353,6 @@ function App() {
 
   const output = result?.output;
   const baseline = result?.baseline;
-  const metrics = output?.reported_metrics;
-  const solver = output?.solver || {};
-  const shownImage = result
-    ? activeTab === "baseline" && baseline ? result.baseline_image
-      : activeTab === "assistantAlternative" && result.alternative_image
-        ? result.alternative_image : result.optimized_image
   const displayedOutput = activeTab === "baseline" && baseline ? baseline : output;
   const metrics = displayedOutput?.reported_metrics;
   const solver = displayedOutput?.solver || {};
@@ -373,7 +366,9 @@ function App() {
     ? JSON.stringify(baseline, null, 2)
     : result?.output_json;
   const shownImage = activeTab === "whatif" ? null : result
-    ? activeTab === "baseline" && baseline ? result.baseline_image : result.optimized_image
+    ? activeTab === "baseline" && baseline ? result.baseline_image
+      : activeTab === "assistantAlternative" && result.alternative_image
+        ? result.alternative_image : result.optimized_image
     : plan?.image;
 
   function updateSetting(key, value) {
