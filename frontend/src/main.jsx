@@ -30,8 +30,13 @@ function App() {
   const [plan, setPlan] = useState(null);
   const [result, setResult] = useState(null);
   const sceneFrame = useRef(null);
+  const appearanceMenu = useRef(null);
   const [activeTab, setActiveTab] = useState("optimized");
   const [displayMode, setDisplayMode] = useState("2d");
+  const [theme, setTheme] = useState(() => localStorage.getItem("cable-ring-theme") || "night");
+  const [accent, setAccent] = useState(() => localStorage.getItem("cable-ring-accent") || "coral");
+  const [compact, setCompact] = useState(() => localStorage.getItem("cable-ring-compact") === "true");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [readySceneUrl, setReadySceneUrl] = useState("");
   const [wallHeight, setWallHeight] = useState(2.7);
   const [wallTransparency, setWallTransparency] = useState(50);
@@ -105,6 +110,29 @@ function App() {
       })
       .catch((reason) => setError(reason.message));
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("cable-ring-theme", theme);
+    localStorage.setItem("cable-ring-accent", accent);
+    localStorage.setItem("cable-ring-compact", String(compact));
+    document.documentElement.style.colorScheme = theme === "night" ? "dark" : "light";
+  }, [theme, accent, compact]);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    function closeOnOutside(event) {
+      if (!appearanceMenu.current?.contains(event.target)) setMenuOpen(false);
+    }
+    function closeOnEscape(event) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuOpen]);
 
   useEffect(() => {
     const timer = setTimeout(() => setSceneSettings({ wallHeight, wallTransparency }), 300);
@@ -212,8 +240,18 @@ function App() {
 
   const output = result?.output;
   const baseline = result?.baseline;
-  const metrics = output?.reported_metrics;
-  const solver = output?.solver || {};
+  const displayedOutput = activeTab === "baseline" && baseline ? baseline : output;
+  const metrics = displayedOutput?.reported_metrics;
+  const solver = displayedOutput?.solver || {};
+  const comparisonMetrics = activeTab === "baseline"
+    ? output?.reported_metrics
+    : baseline?.reported_metrics;
+  const costDelta = comparisonMetrics
+    ? Number(metrics.cost_J - comparisonMetrics.cost_J).toFixed(2)
+    : undefined;
+  const displayedOutputJson = activeTab === "baseline" && baseline
+    ? JSON.stringify(baseline, null, 2)
+    : result?.output_json;
   const shownImage = activeTab === "whatif" ? null : result
     ? activeTab === "baseline" && baseline ? result.baseline_image : result.optimized_image
     : plan?.image;
@@ -223,7 +261,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell theme-${theme} accent-${accent}${compact ? " compact" : ""}`}>
       <aside className="sidebar">
         <section>
           <h2>1. Choose a floor plan</h2>
@@ -316,8 +354,41 @@ function App() {
 
       <main className="main-content">
         <header className="page-heading">
-          <h1>Cable Ring Optimizer</h1>
-          <p>Fewest hubs first, then lowest J = L + 5X + O + 0.5B</p>
+          <div>
+            <h1>Cable Ring Optimizer</h1>
+            <p>Fewest hubs first, then lowest J = L + 5X + O + 0.5B</p>
+          </div>
+          <div className="appearance-menu" ref={appearanceMenu}>
+            <button className="menu-trigger" type="button" aria-label="Appearance settings"
+              aria-expanded={menuOpen} title="Appearance settings" onClick={() => setMenuOpen((open) => !open)}>
+              <span aria-hidden="true">⋮</span>
+            </button>
+            {menuOpen && (
+              <div className="appearance-popover" role="dialog" aria-label="Appearance settings">
+                <div className="popover-title">Appearance</div>
+                <div className="preference-label">Theme</div>
+                <div className="segmented-control" role="group" aria-label="Theme">
+                  <button type="button" aria-pressed={theme === "night"}
+                    className={theme === "night" ? "selected" : ""} onClick={() => setTheme("night")}>Night</button>
+                  <button type="button" aria-pressed={theme === "bright"}
+                    className={theme === "bright" ? "selected" : ""} onClick={() => setTheme("bright")}>Bright</button>
+                </div>
+                <div className="preference-label accent-label">Accent</div>
+                <div className="accent-options" role="group" aria-label="Accent color">
+                  <button className="accent-choice coral" type="button" aria-label="Coral accent"
+                    aria-pressed={accent === "coral"} title="Coral" onClick={() => setAccent("coral")} />
+                  <button className="accent-choice cyan" type="button" aria-label="Cyan accent"
+                    aria-pressed={accent === "cyan"} title="Cyan" onClick={() => setAccent("cyan")} />
+                  <button className="accent-choice lime" type="button" aria-label="Lime accent"
+                    aria-pressed={accent === "lime"} title="Lime" onClick={() => setAccent("lime")} />
+                </div>
+                <label className="compact-option">
+                  <input type="checkbox" checked={compact} onChange={(event) => setCompact(event.target.checked)} />
+                  <span>Compact layout</span>
+                </label>
+              </div>
+            )}
+          </div>
         </header>
 
         {!plan ? (
@@ -336,8 +407,7 @@ function App() {
                 <div className="metrics-grid">
                   <Metric label="Valid" value={metrics.valid ? "yes" : "NO"} />
                   <Metric label="Hubs" value={metrics.hub_count} help={`lower bound ${solver.hub_lower_bound}`} />
-                  <Metric label="Cost J" value={metrics.cost_J}
-                    delta={baseline ? Number(metrics.cost_J - baseline.reported_metrics.cost_J).toFixed(2) : undefined} />
+                  <Metric label="Cost J" value={metrics.cost_J} delta={costDelta} />
                   <Metric label="Length L (m)" value={metrics.total_length_m} />
                   <Metric label="Crossings X" value={metrics.crossings} />
                   <Metric label="Overlap O (m)" value={metrics.overlap_m} />
@@ -403,14 +473,14 @@ function App() {
             {displayMode === "2d" && shownImage &&
               <div className="plot-frame"><img src={shownImage} alt={`${plan.plan_id} floor plan`} /></div>}
 
-            {output && (
+            {displayedOutput && (
               <>
-                {(output.validation?.violations || []).map((violation, index) => (
+                {(displayedOutput.validation?.violations || []).map((violation, index) => (
                   <div className="notice error-notice validation-notice" key={`${violation.rule}-${index}`}>
                     {violation.rule}: {violation.message}
                   </div>
                 ))}
-                {(output.validation?.warnings || []).map((warning, index) => (
+                {(displayedOutput.validation?.warnings || []).map((warning, index) => (
                   <div className="notice warning-notice validation-notice" key={index}>{warning}</div>
                 ))}
 
@@ -419,7 +489,7 @@ function App() {
                   <div className="table-wrap">
                     <table>
                       <thead><tr><th>hub</th><th>room</th><th>rooms</th><th>area m²</th><th>sequence</th><th>ring m</th></tr></thead>
-                      <tbody>{output.hubs.map((hub) => (
+                      <tbody>{displayedOutput.hubs.map((hub) => (
                         <tr key={hub.hub_id}>
                           <td>{hub.hub_id}</td><td>{hub.room_id}</td><td>{hub.assigned_rooms.join(", ")}</td>
                           <td>{hub.assigned_area_m2}</td><td>{hub.closed_sequence.join(" → ")}</td><td>{hub.ring_length_m}</td>
@@ -436,7 +506,7 @@ function App() {
                 <section className="download-section">
                   <h2>Output file</h2>
                   <p>This JSON is the submission file for this plan: hubs, nodes, visiting order and every cable polyline.</p>
-                  <a className="primary-button download-button" href={`data:application/json;charset=utf-8,${encodeURIComponent(result.output_json)}`}
+                  <a className="primary-button download-button" href={`data:application/json;charset=utf-8,${encodeURIComponent(displayedOutputJson)}`}
                     download={`${plan.plan_id}_output.json`}>Download output JSON</a>
                 </section>
               </>
