@@ -20,7 +20,9 @@ def _fill(ax, geom, **kw):
             ax.fill(*hole.xy, color="white", zorder=kw.get("zorder", 1))
 
 
-def draw(plan, out: dict, ax=None, title: str | None = None, show_room_labels: bool = True):
+def draw(plan, out: dict, ax=None, title: str | None = None, show_room_labels: bool = True,
+         door_labels: list[dict] | None = None, closed_doors: list | None = None):
+    """`door_labels`: [{"label", "x", "y"}] drawn as tags; `closed_doors`: polygons drawn red."""
     if ax is None:
         _, ax = plt.subplots(figsize=(10, 10))
     zone_of = {r: i for i, h in enumerate(out.get("hubs", [])) for r in h["assigned_rooms"]}
@@ -42,6 +44,14 @@ def draw(plan, out: dict, ax=None, title: str | None = None, show_room_labels: b
     for d in plan.doors:
         _fill(ax, d, color="#ff9f1c", zorder=5)
     _fill(ax, plan.front_door, color="#c1121f", zorder=5)
+    for d in closed_doors or []:                       # what-if: door turned into wall
+        _fill(ax, d.buffer(0.08), color="#d62828", zorder=6)
+        c = d.centroid
+        ax.scatter([c.x], [c.y], marker="x", s=90, color="white", linewidth=2.5, zorder=7)
+    for t in door_labels or []:
+        ax.text(t["x"], t["y"], t["label"], fontsize=7.5, fontweight="bold", color="#7a4a00",
+                ha="center", va="center", zorder=8,
+                bbox=dict(boxstyle="round,pad=0.18", fc="#fff3d6", ec="#e0a030", lw=0.8))
 
     for i, h in enumerate(out.get("hubs", [])):
         c = ZONE_COLORS[i % len(ZONE_COLORS)]
@@ -92,6 +102,7 @@ def draw(plan, out: dict, ax=None, title: str | None = None, show_room_labels: b
         Line2D([], [], color="#4aa8ff", lw=6, label="window"),
         Line2D([], [], marker="x", ls="", ms=10, color="red", mew=3, label="violation"),
     ], loc="upper left", bbox_to_anchor=(1.0, 1.0), fontsize=8, frameon=False)
+    ax.margins(y=0.015)
     ax.set_aspect("equal")
     ax.tick_params(labelsize=7)
     return ax
