@@ -59,12 +59,12 @@ async function api(path, options = {}) {
   return body;
 }
 
-function Metric({ label, value, help, delta }) {
+function Metric({ label, value, help, delta, deltaTone }) {
   return (
     <div className="metric" title={help || undefined}>
       <div className="metric-label">{label}</div>
       <div className="metric-value">{value}</div>
-      {delta !== undefined && <div className="metric-delta">{delta}</div>}
+      {delta !== undefined && <div className={`metric-delta ${deltaTone}`}>{delta}</div>}
     </div>
   );
 }
@@ -286,13 +286,30 @@ function App() {
   }
 
   async function generate() {
-    if (!plan) return;
+    const index = Number(planIndex);
+    if (source === "dataset" && (!Number.isInteger(index) || index < 0 || index > 16999)) {
+      setError("Plan number must be between 0 and 16999.");
+      return;
+    }
+    if (source === "file" && !plan) return;
     setError("");
     setOperation("solving");
     try {
+      let activePlan = plan;
+      const selectedPlanId = `PLAN_${String(index).padStart(5, "0")}`;
+      if (source === "dataset" && activePlan?.plan_id !== selectedPlanId) {
+        activePlan = await api(`/api/plans/index/${index}`, { method: "POST" });
+        setPlan(activePlan);
+        setResult(null);
+        setChatMessages([]);
+        setAssistantInput("");
+        setSuggestions(INITIAL_SUGGESTIONS);
+        resetWhatIf();
+      }
+      if (!activePlan) return;
       const solved = await api("/api/solve", {
         method: "POST",
-        body: JSON.stringify({ plan_key: plan.plan_key, ...settings }),
+        body: JSON.stringify({ plan_key: activePlan.plan_key, ...settings }),
       });
       setResult(solved);
       resetWhatIf();
@@ -402,13 +419,18 @@ function App() {
               <input id="plan-index" className="text-input" type="number" min="0" max="16999" step="1"
                 value={planIndex} disabled={!datasetAvailable || operation !== ""}
                 onChange={(event) => setPlanIndex(event.target.value)}
-                onBlur={() => {
+                onBlur={(event) => {
                   const value = Number(planIndex);
-                  if (Number.isInteger(value) && value >= 0 && value <= 16999) loadIndex(value);
+                  if (Number.isInteger(value) && value >= 0 && value <= 16999) {
+                    if (event.relatedTarget?.id !== "generate-button") loadIndex(value);
+                  }
                   else setError("Plan number must be between 0 and 16999.");
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    generate();
+                  }
                 }}
                 title="Each number is a different apartment. Try 0, 2, 42, 593." />
               {!datasetAvailable && <p className="muted">data/ResPlan.pkl not found</p>}
@@ -426,7 +448,7 @@ function App() {
 
         <section>
           <h2>2. Solve it</h2>
-          <button className="primary-button full-width" type="button" onClick={generate}
+          <button id="generate-button" className="primary-button full-width" type="button" onClick={generate}
             disabled={!plan || operation !== ""}>
             {operation === "solving" ? "Optimising ..." : "Generate"}
           </button>
@@ -526,7 +548,8 @@ function App() {
                 <div className="metrics-grid">
                   <Metric label="Valid" value={metrics.valid ? "yes" : "NO"} />
                   <Metric label="Hubs" value={metrics.hub_count} help={`lower bound ${solver.hub_lower_bound}`} />
-                  <Metric label="Cost J" value={metrics.cost_J} delta={costDelta} />
+                  <Metric label="Cost J" value={metrics.cost_J} delta={costDelta}
+                    deltaTone={activeTab === "baseline" ? "delta-bad" : "delta-good"} />
                   <Metric label="Length L (m)" value={metrics.total_length_m} />
                   <Metric label="Crossings X" value={metrics.crossings} />
                   <Metric label="Overlap O (m)" value={metrics.overlap_m} />
@@ -641,15 +664,18 @@ function App() {
       </main>
       {plan && !assistantOpen && (
         <button className="assistant-launcher" type="button" aria-controls="assistant-drawer"
-          aria-expanded="false" onClick={() => setAssistantOpen(true)}>
-          AI Assistant
+          aria-label="Open AI Assistant" aria-expanded="false" onClick={() => setAssistantOpen(true)}>
+          <img src="/assistant-bot.png" alt="" />
         </button>
       )}
       {plan && assistantOpen && (
         <section className="assistant-panel assistant-drawer" id="assistant-drawer"
           role="dialog" aria-labelledby="assistant-heading">
           <header className="assistant-drawer-header">
-            <h2 id="assistant-heading">Cable Ring Assistant</h2>
+            <div className="assistant-brand">
+              <img src="/assistant-bot.png" alt="" />
+              <h2 id="assistant-heading">Cable Ring Assistant</h2>
+            </div>
             <button className="assistant-minimize" type="button" aria-label="Minimize assistant"
               onClick={() => setAssistantOpen(false)}>Minimize</button>
           </header>
