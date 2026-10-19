@@ -295,17 +295,71 @@ def build_figure(plan, out: dict, wall_h: float = 2.7, wall_opacity: float = 0.5
     return fig
 
 
+# Slow camera orbit round the plan (one turn a minute). It pauses while the viewer drags or
+# zooms, resumes from their view after a short idle, and stops while the view is off-screen.
+# The WebGL camera is moved directly (~0.05 ms a step); Plotly.relayout would re-run the
+# plot pipeline (~50 ms a step) and make the page sluggish. The layout copy of the camera
+# is kept in step so a redraw (e.g. the cable animation) does not jump back.
+# Plotly replaces {plot_id} with the plot's element id.
+ORBIT_SCRIPT = """
+(function () {
+  var gd = document.getElementById('{plot_id}');
+  var SPEED = 2 * Math.PI / 60, IDLE_MS = 2500, STEP_MS = 33;
+  var on = true, visible = true, down = false, lastUser = 0, last = null;
+  function user() { lastUser = Date.now(); }
+  gd.addEventListener('pointerdown', function () { down = true; user(); }, true);
+  window.addEventListener('pointerup', function () { down = false; user(); }, true);
+  gd.addEventListener('wheel', user, {capture: true, passive: true});
+  gd.addEventListener('touchstart', user, {capture: true, passive: true});
+  if (window.IntersectionObserver) {
+    new IntersectionObserver(function (e) { visible = e[0].isIntersecting; }).observe(gd);
+  }
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'orbit-toggle';
+  function label() { btn.textContent = on ? '\\u275a\\u275a Stop rotating' : '\\u27f3 Rotate'; }
+  btn.onclick = function () { on = !on; last = null; label(); };
+  label();
+  document.body.appendChild(btn);
+  function step(t) {
+    requestAnimationFrame(step);
+    var idle = Date.now() - lastUser > IDLE_MS;
+    var full = gd._fullLayout && gd._fullLayout.scene, scene = full && full._scene;
+    if (!on || !visible || down || !idle || !scene || document.hidden) { last = null; return; }
+    if (last === null) { last = t; return; }
+    if (t - last < STEP_MS) return;
+    var dt = Math.min(t - last, 100) / 1000;
+    last = t;
+    var cam = scene.getCamera(), e = cam.eye;
+    var r = Math.hypot(e.x, e.y), a = Math.atan2(e.y, e.x) + SPEED * dt;
+    cam.eye = {x: r * Math.cos(a), y: r * Math.sin(a), z: e.z};
+    scene.setViewport({camera: cam, aspectratio: full.aspectratio});
+    full.camera.eye = cam.eye;
+    if (gd.layout.scene && gd.layout.scene.camera) gd.layout.scene.camera.eye = cam.eye;
+  }
+  requestAnimationFrame(step);
+})();
+"""
+ORBIT_STYLE = (".orbit-toggle{position:fixed;right:12px;top:40px;z-index:10;padding:6px 12px;"
+               "font:13px sans-serif;color:#e5e7eb;background:rgba(28,32,42,.9);"
+               "border:1px solid rgba(255,255,255,.2);border-radius:4px;cursor:pointer}"
+               ".orbit-toggle:hover{background:rgba(48,54,68,.95)}")
+
+
 def standalone_html(fig: go.Figure, include_plotlyjs: bool | str = True,
                    notify_parent: bool = False) -> str:
-    """The figure as one HTML page on a dark background (plotly.js embedded: works offline)."""
-    post_script = (
-        'window.__cableRing3DReady = true; '
-        'window.parent.postMessage({type: "cable-ring-3d-ready"}, "*");'
-        if notify_parent else None
-    )
+    """The figure as one HTML page on a dark background (plotly.js embedded: works offline).
+
+    The cable animation only runs from its button: Plotly would otherwise auto-play every
+    frame on load, redrawing the scene for a minute or more and making rotation stall.
+    """
+    post_script = ORBIT_SCRIPT
+    if notify_parent:
+        post_script += ('window.__cableRing3DReady = true; '
+                        'window.parent.postMessage({type: "cable-ring-3d-ready"}, "*");')
     html = fig.to_html(include_plotlyjs=include_plotlyjs, full_html=True, config={"displaylogo": False},
-                       default_height="100vh", post_script=post_script)
-    style = f"<style>html,body{{margin:0;background:{PAGE_DARK};}}</style>"
+                       default_height="100vh", post_script=post_script, auto_play=False)
+    style = f"<style>html,body{{margin:0;background:{PAGE_DARK};}}{ORBIT_STYLE}</style>"
     return html.replace("<head>", "<head>" + style, 1)
 
 
