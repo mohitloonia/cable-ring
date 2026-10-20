@@ -1,5 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  Activity, Bot, Cable, CircleAlert, CircleCheck, Download, Gauge, Layers,
+  FileUp, FolderOpen, PanelLeftClose, PanelLeftOpen, Route, Settings2, Sparkles, Timer, Upload,
+  Minimize2, Presentation,
+} from "lucide-react";
 import "./styles.css";
 import { WhatIfPanel, defaultScenario, scenarioRequest } from "./WhatIf.jsx";
 
@@ -11,6 +16,8 @@ const INITIAL_SUGGESTIONS = [
   "Explain the optimization score",
   "Check whether a smaller panel count is feasible",
 ];
+
+const DEFAULT_CAMERA_ZOOM = 0.5;
 
 function followUpSuggestions(message, response, answer) {
   const text = message.toLowerCase();
@@ -59,12 +66,157 @@ async function api(path, options = {}) {
   return body;
 }
 
-function Metric({ label, value, help, delta, deltaTone }) {
+function fitPlotlyScene(frameWindow, directionOverride, zoomFactor = DEFAULT_CAMERA_ZOOM) {
+  const graph = frameWindow.document.querySelector(".plotly-graph-div");
+  const plotly = frameWindow.Plotly;
+  const scene = graph?._fullLayout?.scene;
+  const camera = graph?.layout?.scene?.camera;
+  const renderer = scene?._scene?.glplot;
+  const { bounds, cameraParams } = renderer || {};
+  if (!graph || !plotly || !camera?.eye || !bounds || !cameraParams) return false;
+
+  const { model, view, projection } = cameraParams;
+  const fitView = directionOverride && graph.__cableRingDefaultView
+    ? graph.__cableRingDefaultView
+    : view;
+  if (!model || !fitView || !projection) return false;
+  const direction = directionOverride
+    ? [...directionOverride]
+    : [camera.eye.x, camera.eye.y, camera.eye.z];
+  const eyeLength = Math.hypot(...direction);
+  if (!Number.isFinite(eyeLength) || eyeLength === 0) return false;
+  for (let i = 0; i < direction.length; i += 1) direction[i] /= eyeLength;
+
+  const right = [fitView[0], fitView[4], fitView[8]];
+  const up = [fitView[1], fitView[5], fitView[9]];
+  const forward = [fitView[2], fitView[6], fitView[10]];
+  const padding = 0.9;
+  let fittedDistance = 0;
+  for (let mask = 0; mask < 8; mask += 1) {
+    const x = bounds[(mask >> 0) & 1][0];
+    const y = bounds[(mask >> 1) & 1][1];
+    const z = bounds[(mask >> 2) & 1][2];
+    const point = [
+      model[0] * x + model[4] * y + model[8] * z + model[12],
+      model[1] * x + model[5] * y + model[9] * z + model[13],
+      model[2] * x + model[6] * y + model[10] * z + model[14],
+    ];
+    const dot = (axis) => axis[0] * point[0] + axis[1] * point[1] + axis[2] * point[2];
+    const depth = dot(forward);
+    const screenX = dot(right) + fitView[12];
+    const screenY = dot(up) + fitView[13];
+    fittedDistance = Math.max(
+      fittedDistance,
+      depth + Math.max(
+        Math.abs(screenX * projection[0]),
+        Math.abs(screenY * projection[5]),
+      ) / padding,
+    );
+  }
+  if (!Number.isFinite(fittedDistance) || fittedDistance <= 0) return false;
+  const scaleFactor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
+  const fittedScale = fittedDistance * scaleFactor;
+  if (!Number.isFinite(fittedScale) || fittedScale <= 0) return false;
+  if (!graph.__cableRingDefaultDirection) {
+    graph.__cableRingDefaultDirection = [...direction];
+    graph.__cableRingDefaultCamera = JSON.parse(JSON.stringify(camera));
+    graph.__cableRingDefaultView = [...view];
+  }
+  const fittedCamera = {
+    ...(directionOverride ? graph.__cableRingDefaultCamera : camera),
+    eye: {
+      x: direction[0] * fittedScale,
+      y: direction[1] * fittedScale,
+      z: direction[2] * fittedScale,
+    },
+  };
+  graph.__cableRingFitCamera = fittedCamera;
+  graph.__cableRingFitDistance = fittedDistance;
+  graph.__cableRingZoomFactor = scaleFactor;
+  plotly.relayout(graph, { "scene.camera": fittedCamera });
+  return true;
+}
+
+function updatePlotlyScene(frameWindow, hubs) {
+  const graph = frameWindow.document.querySelector(".plotly-graph-div");
+  const plotly = frameWindow.Plotly;
+  if (!graph || !plotly || !fitPlotlyScene(frameWindow)) return false;
+  if (!graph.__cableRingZoomTracking) {
+    graph.__cableRingZoomTracking = true;
+    graph.on("plotly_relayout", () => {
+      frameWindow.requestAnimationFrame(() => {
+        const currentDistance = graph._fullLayout?.scene?._scene?.glplot?.camera?.distance;
+        const fittedDistance = graph.__cableRingFitDistance;
+        if (currentDistance && fittedDistance) {
+          graph.__cableRingZoomFactor = currentDistance / fittedDistance;
+        }
+      });
+    });
+  }
+  const resetButton = frameWindow.document.querySelector(".camera-reset");
+  if (resetButton && !resetButton.__cableRingFitReset) {
+    resetButton.__cableRingFitReset = true;
+    resetButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      fitPlotlyScene(frameWindow, graph.__cableRingDefaultDirection, DEFAULT_CAMERA_ZOOM);
+    }, true);
+  }
+
+  const routeIndices = [];
+  const routeColors = [];
+  const outlineIndices = [];
+  const floorIndices = [];
+  const floorColors = [];
+  const legendIndices = [];
+  const legendNames = [];
+
+  graph.data.forEach((trace, index) => {
+    const cableRoute = trace.mode?.includes("lines") && (
+      trace.name?.includes(" ring · ") || (trace.line?.width === 15 && trace.opacity === 0.12)
+    );
+    if (cableRoute) {
+      routeIndices.push(index);
+      routeColors.push("#22D3EE");
+      const hub = hubs.find((item) => trace.name?.startsWith(`${item.hub_id} ring · `));
+      if (hub && Number.isFinite(hub.ring_length_m)) {
+        const length = hub.ring_length_m;
+        const precision = length === 0 ? 2 : Math.max(2, Math.min(12, Math.ceil(-Math.log10(Math.abs(length)))));
+        legendIndices.push(index);
+        legendNames.push(`${hub.hub_id} ring · ${length.toFixed(precision)} m`);
+      }
+    } else if (trace.mode?.includes("lines") && trace.line?.color === "#69d9f5") {
+      outlineIndices.push(index);
+    }
+
+    if (trace.type === "mesh3d" && trace.name === "floor") {
+      const adjusted = {
+        "#087fba": "#287b9e",
+        "#00a889": "#238b7d",
+      }[trace.color];
+      if (adjusted) {
+        floorIndices.push(index);
+        floorColors.push(adjusted);
+      }
+    }
+  });
+
+  if (routeIndices.length) plotly.restyle(graph, { "line.color": routeColors }, routeIndices);
+  if (outlineIndices.length) plotly.restyle(graph, { "line.color": "#526579" }, outlineIndices);
+  if (floorIndices.length) plotly.restyle(graph, { color: floorColors }, floorIndices);
+  if (legendIndices.length) plotly.restyle(graph, { name: legendNames }, legendIndices);
+  return true;
+}
+
+function Metric({ label, value, help, delta, deltaTone, deltaLabel, Icon, featured = false, valueTone = "" }) {
   return (
-    <div className="metric" title={help || undefined}>
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">{value}</div>
-      {delta !== undefined && <div className={`metric-delta ${deltaTone}`}>{delta}</div>}
+    <div className={`metric${featured ? " metric-featured" : ""}`} title={help || undefined}>
+      <div className="metric-heading">
+        <span className="metric-label">{label}</span>
+        {Icon && <Icon size={16} strokeWidth={1.8} aria-hidden="true" />}
+      </div>
+      <div className={`metric-value ${valueTone}`}>{value}</div>
+      {delta !== undefined && <div className={`metric-delta ${deltaTone}`}>{delta} <span>{deltaLabel}</span></div>}
     </div>
   );
 }
@@ -79,17 +231,24 @@ function App() {
   const sceneFrame = useRef(null);
   const appearanceMenu = useRef(null);
   const [activeTab, setActiveTab] = useState("optimized");
-  const [displayMode, setDisplayMode] = useState("2d");
+  const [displayMode, setDisplayMode] = useState("3d");
   const [theme, setTheme] = useState(() => localStorage.getItem("cable-ring-theme") || "night");
-  const [accent, setAccent] = useState(() => localStorage.getItem("cable-ring-accent") || "coral");
+  const [accent, setAccent] = useState(() => localStorage.getItem("cable-ring-accent") || "cyan");
   const [compact, setCompact] = useState(() => localStorage.getItem("cable-ring-compact") === "true");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia("(max-width: 720px)").matches);
+  const [presentationMode, setPresentationMode] = useState(false);
+  const presentationLayout = useRef(null);
+  const sceneOutputRef = useRef(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [readySceneUrl, setReadySceneUrl] = useState("");
-  const [wallHeight, setWallHeight] = useState(2.7);
-  const [wallTransparency, setWallTransparency] = useState(50);
-  const [sceneSettings, setSceneSettings] = useState({ wallHeight: 2.7, wallTransparency: 50 });
+  const [wallHeight, setWallHeight] = useState(1.5);
+  const [wallTransparency, setWallTransparency] = useState(90);
+  const [sceneSettings, setSceneSettings] = useState({ wallHeight: 1.5, wallTransparency: 90 });
   const [operation, setOperation] = useState("");
   const [error, setError] = useState("");
+  const startupStartedRef = useRef(false);
+  const startupRequestRef = useRef(0);
+  const startupInteractedRef = useRef(false);
   const [assistantInput, setAssistantInput] = useState("");
   const [chatMessages, setChatMessages] = useState([]);
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -119,6 +278,19 @@ function App() {
     setScenarioResult(null);
     setScenario(defaultScenario());
     setScenarioVersion(0);
+  }
+
+  function resetViewerSettings() {
+    setWallHeight(1.5);
+    setWallTransparency(90);
+    setSceneSettings({ wallHeight: 1.5, wallTransparency: 90 });
+  }
+
+  function interruptStartup() {
+    if (!startupStartedRef.current || startupInteractedRef.current) return;
+    startupInteractedRef.current = true;
+    startupRequestRef.current += 1;
+    setOperation((current) => current === "startup" ? "" : current);
   }
 
   useEffect(() => {
@@ -154,15 +326,36 @@ function App() {
   }
 
   useEffect(() => {
-    api("/api/status")
-      .then(async (status) => {
+    if (startupStartedRef.current) return;
+    startupStartedRef.current = true;
+    const requestId = ++startupRequestRef.current;
+    const isCurrent = () => requestId === startupRequestRef.current && !startupInteractedRef.current;
+    setOperation("startup");
+    (async () => {
+      try {
+        const status = await api("/api/status");
+        if (!isCurrent()) return;
         setDatasetAvailable(status.dataset_available);
         setAssistantAiAvailable(status.assistant_ai_available);
-        if (status.dataset_available) {
-          setPlan(await api("/api/plans/index/0", { method: "POST" }));
-        }
-      })
-      .catch((reason) => setError(reason.message));
+        if (!status.dataset_available) throw new Error("The dataset is unavailable. You can still upload a plan JSON file.");
+        const initialPlan = await api("/api/plans/index/0", { method: "POST" });
+        if (!isCurrent()) return;
+        setPlan(initialPlan);
+        const solved = await api("/api/solve", {
+          method: "POST",
+          body: JSON.stringify({ plan_key: initialPlan.plan_key, ...settings }),
+        });
+        if (!isCurrent()) return;
+        setResult(solved);
+        setActiveTab("optimized");
+        setDisplayMode("3d");
+        resetWhatIf();
+      } catch (reason) {
+        if (isCurrent()) setError(reason.message);
+      } finally {
+        if (isCurrent()) setOperation("");
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -209,22 +402,57 @@ function App() {
       return undefined;
     }
     setReadySceneUrl("");
+    let resizeObserver;
+    let resizeTimer;
+    let initialFitTimer;
     const timer = setInterval(() => {
-      if (sceneFrame.current?.contentWindow?.__cableRing3DReady) {
+      const frameWindow = sceneFrame.current?.contentWindow;
+      if (frameWindow?.__cableRing3DReady && updatePlotlyScene(frameWindow, sceneOutputRef.current?.hubs || [])) {
         setReadySceneUrl(sceneUrl);
         clearInterval(timer);
+        initialFitTimer = setTimeout(() => {
+          if (sceneFrame.current?.contentWindow === frameWindow) {
+            fitPlotlyScene(frameWindow, undefined, DEFAULT_CAMERA_ZOOM);
+          }
+        }, 150);
+        const frame = sceneFrame.current;
+        if (frame) {
+          let previousSize = [frame.clientWidth, frame.clientHeight];
+          resizeObserver = new ResizeObserver(() => {
+            const size = [frame.clientWidth, frame.clientHeight];
+            if (size[0] === previousSize[0] && size[1] === previousSize[1]) return;
+            previousSize = size;
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+              const graph = frameWindow.document.querySelector(".plotly-graph-div");
+              const currentDistance = graph?._fullLayout?.scene?._scene?.glplot?.camera?.distance;
+              const fittedDistance = graph?.__cableRingFitDistance;
+              const zoomFactor = graph?.__cableRingZoomFactor
+                || (currentDistance && fittedDistance ? currentDistance / fittedDistance : 1);
+              fitPlotlyScene(frameWindow, undefined, zoomFactor);
+            }, 100);
+          });
+          resizeObserver.observe(frame);
+        }
       }
     }, 100);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(initialFitTimer);
+      resizeObserver?.disconnect();
+      clearTimeout(resizeTimer);
+    };
   }, [sceneUrl]);
 
   async function loadIndex(index) {
+    interruptStartup();
     setPlanIndex(String(index));
     setPlan(null);
     setResult(null);
     setChatMessages([]);
     setAssistantInput("");
     setSuggestions(INITIAL_SUGGESTIONS);
+    resetViewerSettings();
     resetWhatIf();
     setError("");
     setOperation("loading");
@@ -238,6 +466,7 @@ function App() {
   }
 
   function selectDataset() {
+    interruptStartup();
     setSource("dataset");
     const index = Number(planIndex);
     if (datasetAvailable && Number.isInteger(index) && index >= 0 && index <= 16999) {
@@ -252,6 +481,7 @@ function App() {
   }
 
   function selectFileSource() {
+    interruptStartup();
     setSource("file");
     setPlan(null);
     setResult(null);
@@ -263,12 +493,14 @@ function App() {
 
   async function loadFile(file) {
     if (!file) return;
+    interruptStartup();
     setSource("file");
     setPlan(null);
     setResult(null);
     setChatMessages([]);
     setAssistantInput("");
     setSuggestions(INITIAL_SUGGESTIONS);
+    resetViewerSettings();
     resetWhatIf();
     setError("");
     setOperation("loading");
@@ -286,6 +518,7 @@ function App() {
   }
 
   async function generate() {
+    interruptStartup();
     const index = Number(planIndex);
     if (source === "dataset" && (!Number.isInteger(index) || index < 0 || index > 16999)) {
       setError("Plan number must be between 0 and 16999.");
@@ -300,6 +533,7 @@ function App() {
       if (source === "dataset" && activePlan?.plan_id !== selectedPlanId) {
         activePlan = await api(`/api/plans/index/${index}`, { method: "POST" });
         setPlan(activePlan);
+        resetViewerSettings();
         setResult(null);
         setChatMessages([]);
         setAssistantInput("");
@@ -314,7 +548,7 @@ function App() {
       setResult(solved);
       resetWhatIf();
       setActiveTab("optimized");
-      setDisplayMode("2d");
+      setDisplayMode("3d");
     } catch (reason) {
       setError(reason.message);
     } finally {
@@ -386,6 +620,10 @@ function App() {
   const displayedOutputJson = activeTab === "baseline" && baseline
     ? JSON.stringify(baseline, null, 2)
     : result?.output_json;
+  const sceneOutput = activeTab === "baseline" && baseline ? baseline
+    : activeTab === "whatif" && scenarioVersion > 0 ? scenarioResult?.output || output
+      : displayedOutput;
+  sceneOutputRef.current = sceneOutput;
   const shownImage = activeTab === "whatif" ? null : result
     ? activeTab === "baseline" && baseline ? result.baseline_image
       : activeTab === "assistantAlternative" && result.alternative_image
@@ -393,14 +631,49 @@ function App() {
     : plan?.image;
 
   function updateSetting(key, value) {
+    interruptStartup();
     setSettings((current) => ({ ...current, [key]: value }));
   }
 
+  function enterPresentationMode() {
+    presentationLayout.current = { sidebarCollapsed, displayMode };
+    setSidebarCollapsed(true);
+    setDisplayMode("3d");
+    setPresentationMode(true);
+  }
+
+  function exitPresentationMode() {
+    const previous = presentationLayout.current;
+    setPresentationMode(false);
+    if (previous) {
+      setSidebarCollapsed(previous.sidebarCollapsed);
+      setDisplayMode(previous.displayMode);
+    }
+    presentationLayout.current = null;
+  }
+
   return (
-    <div className={`app-shell theme-${theme} accent-${accent}${compact ? " compact" : ""}`}>
+    <div className={`app-shell theme-${theme} accent-${accent}${compact ? " compact" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}${presentationMode ? " presentation-mode" : ""}`}>
       <aside className="sidebar">
+        <div className="sidebar-collapsed-rail" aria-label="Collapsed controls">
+          <button className="rail-button rail-expand" type="button" aria-label="Expand controls"
+            title="Expand controls" onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
+          <button className="rail-button" type="button" aria-label="Floor plan selection" title="Floor plan selection"
+            onClick={() => setSidebarCollapsed(false)}><FolderOpen size={17} /></button>
+          <button className="rail-button" type="button" aria-label="Upload floor plan JSON" title="Upload floor plan JSON"
+            onClick={() => { setSource("file"); setSidebarCollapsed(false); }}><FileUp size={17} /></button>
+          <button className="rail-button rail-generate" type="button" aria-label="Generate design" title="Generate design"
+            disabled={!plan || operation !== ""} onClick={generate}><Sparkles size={17} /></button>
+          <button className="rail-button" type="button" aria-label="Advanced optimization settings" title="Advanced optimization settings"
+            onClick={() => setSidebarCollapsed(false)}><Settings2 size={17} /></button>
+        </div>
+        <div className="sidebar-expanded-content">
+        <div className="sidebar-brand">
+          <button className="sidebar-brand-collapse" type="button" aria-label="Collapse controls"
+            title="Collapse controls" onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={17} /></button>
+        </div>
         <section>
-          <h2>1. Choose a floor plan</h2>
+          <h2><span>01</span> Floor plan</h2>
           <div className="radio-group" role="radiogroup" aria-label="Where does the plan come from?">
             <label>
               <input type="radio" name="source" checked={source === "dataset"}
@@ -417,8 +690,11 @@ function App() {
             <>
               <label className="field-label" htmlFor="plan-index">Plan number (0 - 16999)</label>
               <input id="plan-index" className="text-input" type="number" min="0" max="16999" step="1"
-                value={planIndex} disabled={!datasetAvailable || operation !== ""}
-                onChange={(event) => setPlanIndex(event.target.value)}
+                value={planIndex} disabled={!datasetAvailable || operation === "loading" || operation === "solving"}
+                onChange={(event) => {
+                  interruptStartup();
+                  setPlanIndex(event.target.value);
+                }}
                 onBlur={(event) => {
                   const value = Number(planIndex);
                   if (Number.isInteger(value) && value >= 0 && value <= 16999) {
@@ -447,10 +723,12 @@ function App() {
         </section>
 
         <section>
-          <h2>2. Solve it</h2>
+          <h2><span>02</span> Optimization</h2>
           <button id="generate-button" className="primary-button full-width" type="button" onClick={generate}
-            disabled={!plan || operation !== ""}>
-            {operation === "solving" ? "Optimising ..." : "Generate"}
+            disabled={operation !== "" || (source === "file" && !plan) || (source === "dataset" && !datasetAvailable)}>
+            {operation === "startup" ? <><Activity size={16} className="spin-icon" /> Optimizing Plan 0 ...</>
+              : operation === "solving" ? <><Activity size={16} className="spin-icon" /> Optimizing ...</>
+                : <><Sparkles size={16} /> Generate design</>}
           </button>
           <details className="settings-details">
             <summary>Settings (optional)</summary>
@@ -473,7 +751,7 @@ function App() {
                 <span>Zones may connect through bathrooms etc.</span>
               </label>
 
-              <label className="field-label" htmlFor="time-budget">Time budget per plan (s)</label>
+              <label className="field-label" htmlFor="time-budget"><Timer size={14} /> Time budget per plan (s)</label>
               <div className="range-line">
                 <input id="time-budget" type="range" min="5" max="120" step="1"
                   value={settings.time_budget_s}
@@ -491,14 +769,39 @@ function App() {
         </section>
         {error && <div className="notice error-notice" role="alert">{error}</div>}
         {operation === "loading" && <p className="muted">Loading plan ...</p>}
+        </div>
       </aside>
 
       <main className="main-content">
         <header className="page-heading">
-          <div>
-            <h1>Cable Ring Optimizer</h1>
-            <p>Fewest hubs first, then lowest J = L + 5X + O + 0.5B</p>
+          <div className="topbar-leading">
+            <button className="icon-button sidebar-toggle" type="button" aria-label={sidebarCollapsed ? "Expand controls" : "Collapse controls"}
+              title={sidebarCollapsed ? "Expand controls" : "Collapse controls"}
+              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>
+              {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+            </button>
+            <div className="topbar-brand-mark"><Cable size={19} strokeWidth={2} aria-hidden="true" /></div>
+            <div className="topbar-titles">
+              <h1>Cable Ring Optimizer</h1>
+              <p>Intelligent Cable Network Design</p>
+            </div>
           </div>
+          <div className="topbar-actions">
+            <div className="topbar-plan"><span>ACTIVE PLAN</span><strong>{plan?.plan_id || "No plan loaded"}</strong></div>
+            <span className={`status-pill ${metrics ? (metrics.valid ? "status-valid" : "status-invalid") : "status-idle"}`}>
+              {metrics ? (metrics.valid ? <CircleCheck size={14} /> : <CircleAlert size={14} />) : <span className="status-dot" />}
+              {metrics ? (metrics.valid ? "Valid solution" : "Needs review") : "Awaiting solve"}
+            </span>
+            {displayedOutputJson && (
+              <a className="icon-button top-export" href={`data:application/json;charset=utf-8,${encodeURIComponent(displayedOutputJson)}`}
+                download={`${plan.plan_id}_output.json`} aria-label="Export JSON" title="Export JSON">
+                <Download size={17} />
+              </a>
+            )}
+            {plan && <button className="copilot-button" type="button" onClick={() => setAssistantOpen(true)}><Bot size={16} /> AI Copilot</button>}
+            {presentationMode && <button className="presentation-exit" type="button" onClick={exitPresentationMode}>
+              <Minimize2 size={15} /> Exit presentation
+            </button>}
           <div className="appearance-menu" ref={appearanceMenu}>
             <button className="menu-trigger" type="button" aria-label="Appearance settings"
               aria-expanded={menuOpen} title="Appearance settings" onClick={() => setMenuOpen((open) => !open)}>
@@ -530,31 +833,52 @@ function App() {
               </div>
             )}
           </div>
+          </div>
         </header>
 
         {!plan ? (
-          <div className="notice info-notice">
-            Upload a plan JSON file in the sidebar (e.g. inputs/PLAN_00042.json), or switch to picking a plan from the dataset.
-          </div>
+          error ? (
+            <div className="startup-error" role="alert">
+              <CircleAlert size={18} />
+              <span>{error}</span>
+              <button className="secondary-button" type="button" onClick={generate}>Retry Plan 0</button>
+            </div>
+          ) : (
+            <div className="notice info-notice">
+              Upload a plan JSON file in the sidebar (e.g. inputs/PLAN_00042.json), or switch to picking a plan from the dataset.
+            </div>
+          )
         ) : (
           <>
-            <p className="plan-summary"><strong>{plan.plan_id}</strong>: {plan.room_count} rooms, {plan.eligible_count} that need a node
-              (living, bedroom, kitchen, storage), {plan.eligible_area_m2.toFixed(1)} m² of eligible area.</p>
+            <section className="plan-summary">
+              <div className="plan-summary-copy">
+                <span className="eyebrow">FLOOR PLAN</span>
+                <strong>{plan.plan_id}</strong>
+                <span>{plan.room_count} rooms · {plan.eligible_count} network endpoints · {plan.eligible_area_m2.toFixed(1)} m² eligible</span>
+              </div>
+              <div className="hero-quick-metrics">
+                <div><span>HUBS</span><strong>{metrics?.hub_count ?? "—"}</strong></div>
+                <div><span>COST J</span><strong>{metrics?.cost_J ?? "—"}</strong></div>
+                <div className="hero-objective"><Gauge size={14} /><span>Fewest hubs, then J = L + 5X + O + 0.5B</span></div>
+              </div>
+            </section>
 
-            {!result && <div className="notice info-notice">This is the empty floor plan. Press <strong>Generate</strong> in the sidebar to place hubs, nodes and cable.</div>}
+            {operation === "startup" && (
+              <div className="startup-loading" role="status">
+                <Activity size={22} className="spin-icon" />
+                <div><strong>Optimizing Plan 0</strong><span>Building the validated digital twin with the configured optimizer.</span></div>
+              </div>
+            )}
+            {error && !result && (
+              <div className="startup-error" role="alert">
+                <CircleAlert size={18} />
+                <span>{error}</span>
+                <button className="secondary-button" type="button" onClick={generate}>Retry optimization</button>
+              </div>
+            )}
 
             {metrics && (
-              <>
-                <div className="metrics-grid">
-                  <Metric label="Valid" value={metrics.valid ? "yes" : "NO"} />
-                  <Metric label="Hubs" value={metrics.hub_count} help={`lower bound ${solver.hub_lower_bound}`} />
-                  <Metric label="Cost J" value={metrics.cost_J} delta={costDelta}
-                    deltaTone={activeTab === "baseline" ? "delta-bad" : "delta-good"} />
-                  <Metric label="Length L (m)" value={metrics.total_length_m} />
-                  <Metric label="Crossings X" value={metrics.crossings} />
-                  <Metric label="Overlap O (m)" value={metrics.overlap_m} />
-                  <Metric label="Bends B" value={metrics.bends} />
-                </div>
+              <div className="hero-navigation">
                 <div className="tabs" role="tablist" aria-label="Solution view">
                   <button role="tab" aria-selected={activeTab === "optimized"} className={activeTab === "optimized" ? "active" : ""}
                     onClick={() => setActiveTab("optimized")}>Optimised</button>
@@ -570,42 +894,15 @@ function App() {
                     onClick={() => setActiveTab("whatif")}>What-if simulator</button>
                 </div>
                 <div className="view-switch" role="tablist" aria-label="Visualization">
-                  <button role="tab" aria-selected={displayMode === "2d"} className={displayMode === "2d" ? "active" : ""}
-                    onClick={() => setDisplayMode("2d")}>2D</button>
                   <button role="tab" aria-selected={displayMode === "3d"} className={displayMode === "3d" ? "active" : ""}
-                    onClick={() => setDisplayMode("3d")}>3D</button>
+                    onClick={() => setDisplayMode("3d")}>3D Twin</button>
+                  <button role="tab" aria-selected={displayMode === "2d"} className={displayMode === "2d" ? "active" : ""}
+                    onClick={() => setDisplayMode("2d")}>2D Plan</button>
                 </div>
-                {displayMode === "3d" && (
-                  <div className="scene-controls">
-                    <label className="scene-control" htmlFor="wall-height">
-                      <span>Wall height</span>
-                      <input id="wall-height" type="range" min="1.8" max="4" step="0.1"
-                        value={wallHeight} onChange={(event) => setWallHeight(Number(event.target.value))} />
-                      <output>{wallHeight.toFixed(1)} m</output>
-                    </label>
-                    <label className="scene-control" htmlFor="wall-transparency">
-                      <span>Wall transparency</span>
-                      <input id="wall-transparency" type="range" min="0" max="100" step="5"
-                        value={wallTransparency}
-                        onChange={(event) => setWallTransparency(Number(event.target.value))} />
-                      <output>{wallTransparency}%</output>
-                    </label>
-                  </div>
-                )}
-                {activeTab === "whatif" && (
-                  <WhatIfPanel options={whatIfOptions} planKey={plan.plan_key} official={output}
-                    scenario={scenario} setScenario={setScenario}
-                    onRun={runScenario} onReset={resetScenario} busy={operation === "scenario"}
-                    scenarioResult={scenarioResult} displayMode={displayMode}
-                    onDragScenario={() => setScenarioVersion((v) => v + 1)}
-                    onDragReset={() => setScenarioVersion(0)} />
-                )}
-                {activeTab === "whatif" && displayMode === "3d" && (
-                  <p className="help-text">{scenarioVersion > 0
-                    ? "3D view of your what-if change (latest drag or scenario)."
-                    : "3D view of the official solution. Drag a device or run a scenario to see it here."}</p>
-                )}
-              </>
+                {result && <button className="presentation-button" type="button" onClick={enterPresentationMode}>
+                  <Presentation size={15} /> Present
+                </button>}
+              </div>
             )}
 
             {result && sceneUrl && (
@@ -616,10 +913,118 @@ function App() {
                 <iframe ref={sceneFrame} key={sceneUrl} className="plot-3d" title="Interactive 3D floor plan"
                   src={sceneUrl}
                   aria-hidden={displayMode !== "3d"} tabIndex={displayMode === "3d" ? 0 : -1} />
+                {displayMode === "3d" && (
+                  <div className="scene-floating-controls" aria-label="3D building controls">
+                    <div className="floating-control-heading"><Settings2 size={14} /> BUILDING</div>
+                    <label className="floating-slider" htmlFor="wall-height">
+                      <span>Wall height <output>{wallHeight.toFixed(1)} m</output></span>
+                      <input id="wall-height" type="range" min="1.5" max="4" step="0.1"
+                        value={wallHeight} onChange={(event) => setWallHeight(Number(event.target.value))} />
+                    </label>
+                    <label className="floating-slider" htmlFor="wall-transparency">
+                      <span>Wall transparency <output>{wallTransparency}%</output></span>
+                      <input id="wall-transparency" type="range" min="0" max="100" step="5"
+                        value={wallTransparency} onChange={(event) => setWallTransparency(Number(event.target.value))} />
+                    </label>
+                  </div>
+                )}
+                {presentationMode && (
+                  <div className="presentation-overlay" aria-label="Presentation metrics">
+                    <strong>{plan.plan_id}</strong>
+                    <span>{metrics?.hub_count ?? "—"} hubs</span>
+                    <span>J {metrics?.cost_J ?? "—"}</span>
+                    <span className={metrics?.valid ? "presentation-valid" : "presentation-invalid"}>
+                      {metrics ? (metrics.valid ? "Valid" : "Needs review") : "Optimizing"}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
-            {displayMode === "2d" && shownImage &&
+            {operation !== "startup" && ((displayMode === "2d") || !result) && shownImage &&
               <div className="plot-frame"><img src={shownImage} alt={`${plan.plan_id} floor plan`} /></div>}
+
+            {metrics && (
+              <section className="secondary-analytics" aria-label="Solution metrics and comparison">
+                <div className="secondary-section-heading">
+                  <div><span className="eyebrow">SOLUTION READOUT</span><h2>Performance metrics</h2></div>
+                  <span className={`status-pill ${metrics.valid ? "status-valid" : "status-invalid"}`}>
+                    {metrics.valid ? <CircleCheck size={14} /> : <CircleAlert size={14} />}
+                    {metrics.valid ? "Validated" : "Invalid"}
+                  </span>
+                </div>
+                <div className="metrics-grid">
+                  <Metric label="Validity" value={metrics.valid ? "Valid" : "Invalid"}
+                    help="Whether this design passes the independent hard-rule validator."
+                    valueTone={metrics.valid ? "value-good" : "value-bad"} Icon={metrics.valid ? CircleCheck : CircleAlert} />
+                  <Metric label="Hubs" value={metrics.hub_count} help={`Installed hubs. Feasible lower bound: ${solver.hub_lower_bound ?? "not reported"}.`}
+                    Icon={Layers} featured />
+                  <Metric label="Cost J" value={metrics.cost_J} delta={costDelta}
+                    deltaTone={activeTab === "baseline" ? "delta-bad" : "delta-good"}
+                    deltaLabel={activeTab === "baseline" ? "vs optimized" : "vs baseline"}
+                    help="Official objective after minimizing hub count: J = L + 5X + O + 0.5B."
+                    Icon={Gauge} featured />
+                  <Metric label="Cable length" value={`${metrics.total_length_m} m`} help="Total cable length L in metres." Icon={Cable} />
+                  <Metric label="Crossings" value={metrics.crossings} help="Number of cable crossings X." Icon={Activity} />
+                  <Metric label="Overlap" value={`${metrics.overlap_m} m`} help="Cable overlap O in metres." Icon={Layers} />
+                  <Metric label="Bends" value={metrics.bends} help="Number of cable bends B." Icon={Route} />
+                </div>
+                {baseline && output && (
+                  <section className="baseline-strip" aria-label="Optimized design compared with greedy baseline">
+                    <div className="baseline-priority">
+                      <span className="eyebrow">DESIGN COMPARISON</span>
+                      <strong>{output.reported_metrics.hub_count <= baseline.reported_metrics.hub_count
+                        ? "Hub priority satisfied" : "Baseline uses fewer hubs"}</strong>
+                    </div>
+                    <div className="baseline-reading">
+                      <span>Hubs</span>
+                      <strong>{baseline.reported_metrics.hub_count} <i>→</i> {output.reported_metrics.hub_count}</strong>
+                      <small>Greedy → optimized</small>
+                    </div>
+                    <div className="baseline-reading">
+                      <span>Cost improvement</span>
+                      <strong className={output.reported_metrics.cost_J <= baseline.reported_metrics.cost_J ? "delta-good" : "delta-bad"}>
+                        {(baseline.reported_metrics.cost_J - output.reported_metrics.cost_J).toFixed(2)} J
+                      </strong>
+                      <small>Greedy baseline → optimized</small>
+                    </div>
+                    <div className="baseline-reading baseline-length">
+                      <span>Cable saved</span>
+                      <strong>{(baseline.reported_metrics.total_length_m - output.reported_metrics.total_length_m).toFixed(2)} m</strong>
+                      <small>Greedy baseline → optimized</small>
+                    </div>
+                    {[
+                      ["Crossings X", "crossings", ""],
+                      ["Overlap O", "overlap_m", " m"],
+                      ["Bends B", "bends", ""],
+                    ].map(([label, key, unit]) => {
+                      const difference = baseline.reported_metrics[key] - output.reported_metrics[key];
+                      const tone = difference > 0 ? "delta-good" : difference < 0 ? "delta-bad" : "delta-same";
+                      return (
+                        <div className="baseline-reading baseline-extra" key={key}>
+                          <span>{label}</span>
+                          <strong className={tone}>{`${difference > 0 ? "+" : ""}${Number(difference.toFixed(2))}${unit}`}</strong>
+                          <small>Greedy baseline → optimized</small>
+                        </div>
+                      );
+                    })}
+                  </section>
+                )}
+              </section>
+            )}
+
+            {activeTab === "whatif" && (
+              <WhatIfPanel options={whatIfOptions} planKey={plan.plan_key} official={output}
+                scenario={scenario} setScenario={setScenario}
+                onRun={runScenario} onReset={resetScenario} busy={operation === "scenario"}
+                scenarioResult={scenarioResult} displayMode={displayMode}
+                onDragScenario={() => setScenarioVersion((v) => v + 1)}
+                onDragReset={() => setScenarioVersion(0)} />
+            )}
+            {activeTab === "whatif" && displayMode === "3d" && (
+              <p className="help-text">{scenarioVersion > 0
+                ? "3D view of your what-if change (latest drag or scenario)."
+                : "3D view of the official solution. Drag a device or run a scenario to see it here."}</p>
+            )}
 
             {displayedOutput && (
               <>
@@ -636,10 +1041,10 @@ function App() {
                   <summary>Hubs</summary>
                   <div className="table-wrap">
                     <table>
-                      <thead><tr><th>hub</th><th>room</th><th>rooms</th><th>area m²</th><th>sequence</th><th>ring m</th></tr></thead>
+                      <thead><tr><th>hub</th><th>room</th><th>rooms</th><th>nodes</th><th>area m²</th><th>sequence</th><th>ring m</th></tr></thead>
                       <tbody>{displayedOutput.hubs.map((hub) => (
                         <tr key={hub.hub_id}>
-                          <td>{hub.hub_id}</td><td>{hub.room_id}</td><td>{hub.assigned_rooms.join(", ")}</td>
+                          <td>{hub.hub_id}</td><td>{hub.room_id}</td><td>{hub.assigned_rooms.join(", ")}</td><td>{hub.assigned_nodes.length}</td>
                           <td>{hub.assigned_area_m2}</td><td>{hub.closed_sequence.join(" → ")}</td><td>{hub.ring_length_m}</td>
                         </tr>
                       ))}</tbody>
@@ -647,8 +1052,18 @@ function App() {
                   </div>
                 </details>
                 <details className="output-details">
-                  <summary>Solver info</summary>
-                  <pre>{JSON.stringify(solver, null, 2)}</pre>
+                  <summary>Solver details</summary>
+                  <div className="solver-summary">
+                    <div><span>Engine</span><strong>{solver.mode || "Not reported"}</strong></div>
+                    <div><span>Hub lower bound</span><strong>{solver.hub_lower_bound ?? "Not reported"}</strong></div>
+                    <div><span>Designs evaluated</span><strong>{solver.designs_evaluated ?? "Not reported"}</strong></div>
+                    <div><span>Runtime</span><strong>{solver.time_s !== undefined ? `${solver.time_s} s` : "Not reported"}</strong></div>
+                    {!!solver.dropped_rooms?.length && <div><span>Dropped rooms</span><strong>{solver.dropped_rooms.join(", ")}</strong></div>}
+                  </div>
+                  <details className="raw-solver-details">
+                    <summary>Raw solver payload</summary>
+                    <pre>{JSON.stringify(solver, null, 2)}</pre>
+                  </details>
                 </details>
 
                 <section className="download-section">
@@ -662,18 +1077,12 @@ function App() {
           </>
         )}
       </main>
-      {plan && !assistantOpen && (
-        <button className="assistant-launcher" type="button" aria-controls="assistant-drawer"
-          aria-label="Open AI Assistant" aria-expanded="false" onClick={() => setAssistantOpen(true)}>
-          <img src="/assistant-bot.png" alt="" />
-        </button>
-      )}
       {plan && assistantOpen && (
         <section className="assistant-panel assistant-drawer" id="assistant-drawer"
           role="dialog" aria-labelledby="assistant-heading">
           <header className="assistant-drawer-header">
             <div className="assistant-brand">
-              <img src="/assistant-bot.png" alt="" />
+              <span className="assistant-brand-mark"><Bot size={19} aria-hidden="true" /></span>
               <h2 id="assistant-heading">Cable Ring Assistant</h2>
             </div>
             <button className="assistant-minimize" type="button" aria-label="Minimize assistant"

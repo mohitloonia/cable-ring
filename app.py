@@ -157,8 +157,8 @@ def plan_3d(
     plan_key: str,
     baseline: bool = False,
     scenario: bool = False,
-    wall_height: float = Query(default=2.7, ge=1.8, le=4.0),
-    wall_transparency: int = Query(default=50, ge=0, le=100),
+    wall_height: float = Query(default=1.5, ge=1.5, le=4.0),
+    wall_transparency: int = Query(default=90, ge=0, le=100),
 ) -> HTMLResponse:
     plan = plans.get(plan_key)
     result = results.get(plan_key)
