@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/*.pkl
+data/plan_history.sqlite3*
 outputs/
 .env
 .env.*

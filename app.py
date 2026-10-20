@@ -10,8 +10,9 @@ import copy
 import io
 import logging
 import re
+import sqlite3
 import uuid
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Literal
 
 import matplotlib.pyplot as plt
@@ -20,17 +21,24 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 from plotly.offline import get_plotlyjs
+from shapely import affinity
 
 from cablering.assistant import DesignHistory, Intent, handle_request, parse_request
 from cablering.config import DATA_PATH, Config
 from cablering import conversation as conversation_ai
 from cablering.export_json import check_schema
-from cablering.input_loader import load_dataset, plan_from_index, plan_from_input_dict
+from cablering.input_loader import (
+    load_dataset,
+    plan_from_index,
+    plan_from_input_dict,
+    raw_to_input_dict,
+)
 from shapely.ops import unary_union
 
 from cablering.geometry import parts
 from cablering.optimizer import solve_with_fixed_points
 from cablering.optimizer import solve as solve_plan
+from cablering.plan_history import PlanHistoryStore
 from cablering.visualization import draw
 from cablering.view3d import build_figure, standalone_html
 from cablering import whatif
@@ -38,10 +46,12 @@ from cablering import whatif
 app = FastAPI(title="Cable Ring Optimizer API")
 logger = logging.getLogger(__name__)
 plans: dict[str, object] = {}
+plan_inputs: dict[str, dict] = {}
 design_histories: dict[str, DesignHistory] = {}
 plan_configs: dict[str, Config] = {}
 results: dict[str, dict] = {}
 scenario_plans: dict[str, object] = {}      # plan_key -> plan as modified by the last what-if
+plan_history_store = PlanHistoryStore(DATA_PATH.parent / "plan_history.sqlite3")
 PLOTLY_ASSET_URL = f"/api/assets/plotly-{plotly.__version__}.js"
 
 
@@ -71,11 +81,21 @@ class DragRequest(BaseModel):
 
 class SolveRequest(BaseModel):
     plan_key: str
+    generation_id: str = Field(
+        default_factory=lambda: uuid.uuid4().hex,
+        min_length=1,
+        max_length=64,
+        pattern="^[A-Za-z0-9_-]+$",
+    )
     max_nodes: int = Field(default=Config.max_nodes, ge=1, le=20)
     node_mode: str = Field(default="optimize", pattern="^(optimize|fixed)$")
     zone_via_other_rooms: bool = False
     time_budget_s: int = Field(default=int(Config.time_budget_s), ge=5, le=120)
     compare: bool = True
+
+
+class RenamePlanRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
 
 
 class ConversationMessage(BaseModel):
@@ -100,9 +120,47 @@ def _image_data(plan, output: dict, title: str | None = None, **draw_options) ->
     return "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
 
 
-def _register_plan(plan) -> dict:
+def _plan_input_dict(plan) -> dict:
+    scale = plan.scale
+
+    def drawing_units(geometry):
+        return affinity.scale(geometry, scale, scale, origin=(0, 0))
+
+    raw = {
+        "area": plan.inner.area * scale * scale,
+        "wall_depth": plan.wall_thickness * scale,
+        "inner": drawing_units(plan.inner),
+        "wall": drawing_units(plan.walls),
+        "window": drawing_units(plan.windows),
+        "door": drawing_units(unary_union(plan.doors)) if plan.doors else None,
+        "front_door": drawing_units(plan.front_door),
+        "balcony": drawing_units(plan.outside),
+    }
+    room_geometries: dict[str, list] = {}
+    for room in plan.rooms:
+        room_geometries.setdefault(room.type, []).append(drawing_units(room.poly))
+    for room_type, geometries in room_geometries.items():
+        raw[room_type] = unary_union(geometries)
+    nodes = None
+    if plan.fixed_nodes:
+        nodes = [
+            {
+                **{key: value for key, value in node.items() if key not in {"x", "y"}},
+                "x": node["x"] * scale,
+                "y": node["y"] * scale,
+            }
+            for node in plan.fixed_nodes
+        ]
+    raw["area"] = plan.inner.area * scale * scale
+    input_data = raw_to_input_dict(raw, plan.plan_id, plan.source)
+    input_data["nodes"] = nodes
+    return input_data
+
+
+def _register_plan(plan, input_data: dict | None = None) -> dict:
     key = uuid.uuid4().hex
     plans[key] = plan
+    plan_inputs[key] = copy.deepcopy(input_data) if input_data is not None else _plan_input_dict(plan)
     eligible = plan.eligible_rooms
     return {
         "plan_key": key,
@@ -138,7 +196,10 @@ def dataset_plan(index: int) -> dict:
     if not DATA_PATH.exists():
         raise HTTPException(status_code=404, detail="data/ResPlan.pkl not found")
     try:
-        return _register_plan(plan_from_index(index, load_dataset()))
+        dataset = load_dataset()
+        plan = plan_from_index(index, dataset)
+        input_data = raw_to_input_dict(dataset[index], plan.plan_id, plan.source)
+        return _register_plan(plan, input_data)
     except (IndexError, ValueError, KeyError) as error:
         raise HTTPException(status_code=400, detail=f"Could not load plan: {error}") from error
 
@@ -149,7 +210,108 @@ def upload_plan(payload: dict = Body(...)) -> dict:
         plan = plan_from_input_dict(payload)
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Could not read this file: {error}") from error
-    return _register_plan(plan)
+    return _register_plan(plan, payload)
+
+
+@app.get("/api/history")
+def list_plan_history(
+    q: str = Query(default="", max_length=120),
+    sort: Literal["newest", "oldest", "recently_accessed"] = "newest",
+) -> dict:
+    try:
+        return {"plans": plan_history_store.list(q, sort)}
+    except (sqlite3.Error, ValueError) as error:
+        logger.exception("Could not list saved plans")
+        raise HTTPException(status_code=500, detail="Could not load saved plan history.") from error
+
+
+@app.get("/api/history/by-building/{building_ref}")
+def latest_saved_plan_for_building(building_ref: str) -> dict:
+    try:
+        metadata = plan_history_store.latest_for_building_ref(building_ref)
+    except sqlite3.Error as error:
+        logger.exception("Could not find saved plan for %s", building_ref)
+        raise HTTPException(status_code=500, detail="Could not search saved plan history.") from error
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="No saved plan exists for this plan number.")
+    return metadata
+
+
+@app.get("/api/history/{record_id}")
+def open_saved_plan(record_id: str) -> dict:
+    try:
+        record = plan_history_store.get(record_id)
+    except (sqlite3.Error, ValueError) as error:
+        logger.exception("Could not read saved plan %s", record_id)
+        raise HTTPException(status_code=500, detail="Could not open the saved plan.") from error
+    if record is None:
+        raise HTTPException(status_code=404, detail="Saved plan not found.")
+
+    try:
+        plan = plan_from_input_dict(record["input"])
+        config = Config(**record["metadata"]["generation_settings"])
+    except (KeyError, TypeError, ValueError) as error:
+        logger.exception("Saved plan %s could not be restored", record_id)
+        raise HTTPException(status_code=500, detail="Saved plan data could not be restored.") from error
+
+    registered = _register_plan(plan, record["input"])
+    plan_key = registered["plan_key"]
+    saved_result = record["result"]
+    plans[plan_key] = plan
+    results[plan_key] = {
+        "output": saved_result["output"],
+        "baseline": saved_result["baseline"],
+        "cfg": config,
+    }
+    plan_configs[plan_key] = config
+    design_history = DesignHistory()
+    design_history.initialize(saved_result["output"])
+    design_histories[plan_key] = design_history
+
+    try:
+        metadata = plan_history_store.record_access(record_id)
+    except (sqlite3.Error, ValueError) as error:
+        for registry in (plans, plan_inputs, results, plan_configs, design_histories):
+            registry.pop(plan_key, None)
+        logger.exception("Could not update access stats for saved plan %s", record_id)
+        raise HTTPException(status_code=500, detail="Could not record saved plan access.") from error
+    if metadata is None:
+        for registry in (plans, plan_inputs, results, plan_configs, design_histories):
+            registry.pop(plan_key, None)
+        raise HTTPException(status_code=404, detail="Saved plan not found.")
+
+    return {
+        "metadata": metadata,
+        "plan": registered,
+        "result": {**saved_result, "history_id": record_id},
+    }
+
+
+@app.patch("/api/history/{record_id}")
+def rename_saved_plan(record_id: str, request: RenamePlanRequest) -> dict:
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Plan name cannot be blank.")
+    try:
+        metadata = plan_history_store.rename(record_id, name)
+    except sqlite3.Error as error:
+        logger.exception("Could not rename saved plan %s", record_id)
+        raise HTTPException(status_code=500, detail="Could not rename the saved plan.") from error
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="Saved plan not found.")
+    return metadata
+
+
+@app.delete("/api/history/{record_id}")
+def delete_saved_plan(record_id: str) -> dict:
+    try:
+        deleted = plan_history_store.delete(record_id)
+    except sqlite3.Error as error:
+        logger.exception("Could not delete saved plan %s", record_id)
+        raise HTTPException(status_code=500, detail="Could not delete the saved plan.") from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved plan not found.")
+    return {"deleted": True}
 
 
 @app.get("/api/plans/{plan_key}/3d", response_class=HTMLResponse)
@@ -193,6 +355,51 @@ def solve(request: SolveRequest) -> dict:
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan session expired. Load the plan again.")
 
+    try:
+        previous_generation = plan_history_store.find_by_idempotency_key(request.generation_id)
+    except sqlite3.Error as error:
+        logger.exception("Could not check saved generation %s", request.generation_id)
+        raise HTTPException(status_code=500, detail="Could not check saved plan history.") from error
+    if previous_generation is not None:
+        saved_result = previous_generation["result"]
+        cfg = Config(**previous_generation["metadata"]["generation_settings"])
+        results[request.plan_key] = {
+            "output": saved_result["output"],
+            "baseline": saved_result["baseline"],
+            "cfg": cfg,
+        }
+        plan_configs[request.plan_key] = cfg
+        history = design_histories.setdefault(request.plan_key, DesignHistory())
+        history.initialize(saved_result["output"])
+        return {**saved_result, "history_id": previous_generation["id"]}
+
+    if plan.source.get("dataset"):
+        try:
+            existing_plan = plan_history_store.latest_for_building_ref(plan.plan_id)
+            if existing_plan is not None:
+                plan_history_store.record_access(existing_plan["id"])
+                saved_plan = plan_history_store.get(existing_plan["id"])
+                if saved_plan is None:
+                    raise HTTPException(
+                        status_code=404, detail="The saved plan no longer exists."
+                    )
+                saved_result = saved_plan["result"]
+                cfg = Config(**saved_plan["metadata"]["generation_settings"])
+                results[request.plan_key] = {
+                    "output": saved_result["output"],
+                    "baseline": saved_result["baseline"],
+                    "cfg": cfg,
+                }
+                plan_configs[request.plan_key] = cfg
+                history = design_histories.setdefault(request.plan_key, DesignHistory())
+                history.initialize(saved_result["output"])
+                return {**saved_result, "history_id": saved_plan["id"]}
+        except sqlite3.Error as error:
+            logger.exception("Could not check saved plan %s", plan.plan_id)
+            raise HTTPException(
+                status_code=500, detail="Could not check saved plan history."
+            ) from error
+
     cfg = Config(
         max_nodes=request.max_nodes,
         node_mode=request.node_mode,
@@ -216,7 +423,7 @@ def solve(request: SolveRequest) -> dict:
         else:
             history.accept(output, "Generate with current settings")
     plan_configs[request.plan_key] = copy.deepcopy(cfg)
-    return {
+    response = {
         "output": output,
         "baseline": baseline,
         "optimized_image": _image_data(plan, output),
@@ -225,6 +432,41 @@ def solve(request: SolveRequest) -> dict:
         "versions": history.list_versions(),
         "plotly_asset_url": PLOTLY_ASSET_URL,
     }
+    if output.get("validation", {}).get("valid"):
+        input_data = plan_inputs.get(request.plan_key)
+        try:
+            record = plan_history_store.save(
+                name=plan.plan_id.strip() or "Saved plan",
+                building_ref=plan.plan_id,
+                input_data=input_data if input_data is not None else _plan_input_dict(plan),
+                result=response,
+                metadata={
+                    "source": plan.source,
+                    "generation_settings": asdict(cfg),
+                },
+                metrics=output.get("reported_metrics", {}),
+                idempotency_key=request.generation_id,
+            )
+        except sqlite3.IntegrityError:
+            try:
+                record = plan_history_store.find_by_idempotency_key(request.generation_id)
+            except sqlite3.Error as error:
+                logger.exception("Could not retrieve repeated saved generation")
+                raise HTTPException(
+                    status_code=500, detail="Could not save the generated plan."
+                ) from error
+            if record is None:
+                logger.exception("Saved generation idempotency conflict without a record")
+                raise HTTPException(
+                    status_code=500, detail="Could not save the generated plan."
+                )
+        except (sqlite3.Error, TypeError, ValueError) as error:
+            logger.exception("Could not persist generated plan %s", plan.plan_id)
+            raise HTTPException(
+                status_code=500, detail="Could not save the generated plan."
+            ) from error
+        response["history_id"] = record["id"]
+    return response
 
 
 @app.post("/api/assistant")
