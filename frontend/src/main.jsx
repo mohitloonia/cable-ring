@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity, Bot, Cable, CircleAlert, CircleCheck, Download, Gauge, Layers,
-  FileUp, FolderOpen, PanelLeftClose, PanelLeftOpen, Route, Settings2, Sparkles, Timer, Upload,
+  FileUp, Route, Settings2, Sparkles, Upload,
   Minimize2, Presentation,
 } from "lucide-react";
 import "./styles.css";
@@ -17,7 +17,7 @@ const INITIAL_SUGGESTIONS = [
   "Check whether a smaller panel count is feasible",
 ];
 
-const DEFAULT_CAMERA_ZOOM = 0.5;
+const DEFAULT_CAMERA_ZOOM = 0.9;
 
 function followUpSuggestions(message, response, answer) {
   const text = message.toLowerCase();
@@ -137,10 +137,26 @@ function fitPlotlyScene(frameWindow, directionOverride, zoomFactor = DEFAULT_CAM
   return true;
 }
 
+function positionPlotlyLegend(frameWindow) {
+  const graph = frameWindow.document.querySelector(".plotly-graph-div");
+  const plotly = frameWindow.Plotly;
+  const plotSize = graph?._fullLayout?._size;
+  const parentDocument = frameWindow.frameElement?.ownerDocument;
+  if (!graph || !plotly || !plotSize?.h || !parentDocument) return;
+
+  const topControls = [".page-heading", ".plan-control-bar", ".plan-summary", ".hero-navigation"]
+    .map((selector) => parentDocument.querySelector(selector)?.getBoundingClientRect().bottom || 0);
+  const legendTop = Math.max(...topControls) + 12;
+  const plotTop = graph.getBoundingClientRect().top + plotSize.t;
+  const legendY = 1 - (legendTop - plotTop) / plotSize.h;
+  plotly.relayout(graph, { "legend.y": legendY, "legend.yanchor": "top" });
+}
+
 function updatePlotlyScene(frameWindow, hubs) {
   const graph = frameWindow.document.querySelector(".plotly-graph-div");
   const plotly = frameWindow.Plotly;
   if (!graph || !plotly || !fitPlotlyScene(frameWindow)) return false;
+  positionPlotlyLegend(frameWindow);
   if (!graph.__cableRingZoomTracking) {
     graph.__cableRingZoomTracking = true;
     graph.on("plotly_relayout", () => {
@@ -230,12 +246,12 @@ function App() {
   const [result, setResult] = useState(null);
   const sceneFrame = useRef(null);
   const appearanceMenu = useRef(null);
+  const whatIfSection = useRef(null);
   const [activeTab, setActiveTab] = useState("optimized");
   const [displayMode, setDisplayMode] = useState("3d");
   const [theme, setTheme] = useState(() => localStorage.getItem("cable-ring-theme") || "night");
   const [accent, setAccent] = useState(() => localStorage.getItem("cable-ring-accent") || "cyan");
   const [compact, setCompact] = useState(() => localStorage.getItem("cable-ring-compact") === "true");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia("(max-width: 720px)").matches);
   const [presentationMode, setPresentationMode] = useState(false);
   const presentationLayout = useRef(null);
   const sceneOutputRef = useRef(null);
@@ -272,6 +288,7 @@ function App() {
   const sceneUrl = result && plan
     ? `/api/plans/${plan.plan_key}/3d?wall_height=${sceneSettings.wallHeight}&wall_transparency=${sceneSettings.wallTransparency}${sceneVariant}`
     : "";
+  const showSceneBackground = displayMode === "3d" || activeTab === "whatif";
 
   function resetWhatIf() {
     setWhatIfOptions(null);
@@ -430,6 +447,7 @@ function App() {
               const zoomFactor = graph?.__cableRingZoomFactor
                 || (currentDistance && fittedDistance ? currentDistance / fittedDistance : 1);
               fitPlotlyScene(frameWindow, undefined, zoomFactor);
+              positionPlotlyLegend(frameWindow);
             }, 100);
           });
           resizeObserver.observe(frame);
@@ -443,6 +461,40 @@ function App() {
       clearTimeout(resizeTimer);
     };
   }, [sceneUrl]);
+
+  useEffect(() => {
+    const frame = sceneFrame.current;
+    if (!frame || !sceneUrl) return undefined;
+    let frameWindow;
+    const forwardPageScroll = (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1);
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      const canScroll = delta > 0 ? window.scrollY < maxScroll : window.scrollY > 0;
+      if (!canScroll) return;
+      event.preventDefault();
+      event.stopPropagation();
+      window.scrollBy(0, delta);
+    };
+    const attachWheelHandler = () => {
+      frameWindow = frame.contentWindow;
+      frameWindow?.addEventListener("wheel", forwardPageScroll, { capture: true, passive: false });
+    };
+    frame.addEventListener("load", attachWheelHandler);
+    if (frame.contentDocument?.readyState === "complete") attachWheelHandler();
+    return () => {
+      frame.removeEventListener("load", attachWheelHandler);
+      frameWindow?.removeEventListener("wheel", forwardPageScroll, true);
+    };
+  }, [sceneUrl]);
+
+  useEffect(() => {
+    if (activeTab !== "whatif") return undefined;
+    const frame = requestAnimationFrame(() => {
+      whatIfSection.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeTab]);
 
   async function loadIndex(index) {
     interruptStartup();
@@ -630,14 +682,8 @@ function App() {
         ? result.alternative_image : result.optimized_image
     : plan?.image;
 
-  function updateSetting(key, value) {
-    interruptStartup();
-    setSettings((current) => ({ ...current, [key]: value }));
-  }
-
   function enterPresentationMode() {
-    presentationLayout.current = { sidebarCollapsed, displayMode };
-    setSidebarCollapsed(true);
+    presentationLayout.current = { displayMode };
     setDisplayMode("3d");
     setPresentationMode(true);
   }
@@ -646,140 +692,16 @@ function App() {
     const previous = presentationLayout.current;
     setPresentationMode(false);
     if (previous) {
-      setSidebarCollapsed(previous.sidebarCollapsed);
       setDisplayMode(previous.displayMode);
     }
     presentationLayout.current = null;
   }
 
   return (
-    <div className={`app-shell theme-${theme} accent-${accent}${compact ? " compact" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}${presentationMode ? " presentation-mode" : ""}`}>
-      <aside className="sidebar">
-        <div className="sidebar-collapsed-rail" aria-label="Collapsed controls">
-          <button className="rail-button rail-expand" type="button" aria-label="Expand controls"
-            title="Expand controls" onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
-          <button className="rail-button" type="button" aria-label="Floor plan selection" title="Floor plan selection"
-            onClick={() => setSidebarCollapsed(false)}><FolderOpen size={17} /></button>
-          <button className="rail-button" type="button" aria-label="Upload floor plan JSON" title="Upload floor plan JSON"
-            onClick={() => { setSource("file"); setSidebarCollapsed(false); }}><FileUp size={17} /></button>
-          <button className="rail-button rail-generate" type="button" aria-label="Generate design" title="Generate design"
-            disabled={!plan || operation !== ""} onClick={generate}><Sparkles size={17} /></button>
-          <button className="rail-button" type="button" aria-label="Advanced optimization settings" title="Advanced optimization settings"
-            onClick={() => setSidebarCollapsed(false)}><Settings2 size={17} /></button>
-        </div>
-        <div className="sidebar-expanded-content">
-        <div className="sidebar-brand">
-          <button className="sidebar-brand-collapse" type="button" aria-label="Collapse controls"
-            title="Collapse controls" onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={17} /></button>
-        </div>
-        <section>
-          <h2><span>01</span> Floor plan</h2>
-          <div className="radio-group" role="radiogroup" aria-label="Where does the plan come from?">
-            <label>
-              <input type="radio" name="source" checked={source === "dataset"}
-                onChange={selectDataset} />
-              <span>Pick a floor plan from the dataset</span>
-            </label>
-            <label>
-              <input type="radio" name="source" checked={source === "file"}
-                onChange={selectFileSource} />
-              <span>Upload a plan JSON file</span>
-            </label>
-          </div>
-          {source === "dataset" ? (
-            <>
-              <label className="field-label" htmlFor="plan-index">Plan number (0 - 16999)</label>
-              <input id="plan-index" className="text-input" type="number" min="0" max="16999" step="1"
-                value={planIndex} disabled={!datasetAvailable || operation === "loading" || operation === "solving"}
-                onChange={(event) => {
-                  interruptStartup();
-                  setPlanIndex(event.target.value);
-                }}
-                onBlur={(event) => {
-                  const value = Number(planIndex);
-                  if (Number.isInteger(value) && value >= 0 && value <= 16999) {
-                    if (event.relatedTarget?.id !== "generate-button") loadIndex(value);
-                  }
-                  else setError("Plan number must be between 0 and 16999.");
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    generate();
-                  }
-                }}
-                title="Each number is a different apartment. Try 0, 2, 42, 593." />
-              {!datasetAvailable && <p className="muted">data/ResPlan.pkl not found</p>}
-              <p className="help-text">Each number is a different apartment. Try 0, 2, 42, 593.</p>
-            </>
-          ) : (
-            <>
-              <label className="field-label" htmlFor="plan-file">Plan JSON file</label>
-              <input id="plan-file" className="file-input" type="file" accept=".json,application/json"
-                onChange={(event) => loadFile(event.target.files?.[0])} />
-              <p className="help-text">Ready-made files are in the project's inputs/ folder.</p>
-            </>
-          )}
-        </section>
-
-        <section>
-          <h2><span>02</span> Optimization</h2>
-          <button id="generate-button" className="primary-button full-width" type="button" onClick={generate}
-            disabled={operation !== "" || (source === "file" && !plan) || (source === "dataset" && !datasetAvailable)}>
-            {operation === "startup" ? <><Activity size={16} className="spin-icon" /> Optimizing Plan 0 ...</>
-              : operation === "solving" ? <><Activity size={16} className="spin-icon" /> Optimizing ...</>
-                : <><Sparkles size={16} /> Generate design</>}
-          </button>
-          <details className="settings-details">
-            <summary>Settings (optional)</summary>
-            <div className="settings-fields">
-              <label className="field-label" htmlFor="max-nodes">Max nodes per hub</label>
-              <input id="max-nodes" className="text-input" type="number" min="1" max="20"
-                value={settings.max_nodes} onChange={(event) => updateSetting("max_nodes", Number(event.target.value))} />
-
-              <label className="field-label" htmlFor="node-mode">Node points</label>
-              <select id="node-mode" className="text-input" value={settings.node_mode}
-                onChange={(event) => updateSetting("node_mode", event.target.value)}>
-                <option value="optimize">optimize</option>
-                <option value="fixed">fixed</option>
-              </select>
-              <p className="help-text">optimize = we choose node points; fixed = use node points from the input JSON</p>
-
-              <label className="check-row">
-                <input type="checkbox" checked={settings.zone_via_other_rooms}
-                  onChange={(event) => updateSetting("zone_via_other_rooms", event.target.checked)} />
-                <span>Zones may connect through bathrooms etc.</span>
-              </label>
-
-              <label className="field-label" htmlFor="time-budget"><Timer size={14} /> Time budget per plan (s)</label>
-              <div className="range-line">
-                <input id="time-budget" type="range" min="5" max="120" step="1"
-                  value={settings.time_budget_s}
-                  onChange={(event) => updateSetting("time_budget_s", Number(event.target.value))} />
-                <output>{settings.time_budget_s}</output>
-              </div>
-
-              <label className="check-row">
-                <input type="checkbox" checked={settings.compare}
-                  onChange={(event) => updateSetting("compare", event.target.checked)} />
-                <span>Also run the greedy baseline (for comparison)</span>
-              </label>
-            </div>
-          </details>
-        </section>
-        {error && <div className="notice error-notice" role="alert">{error}</div>}
-        {operation === "loading" && <p className="muted">Loading plan ...</p>}
-        </div>
-      </aside>
-
+    <div className={`app-shell theme-${theme} accent-${accent}${compact ? " compact" : ""}${presentationMode ? " presentation-mode" : ""}${activeTab === "whatif" ? " whatif-active" : ""}`}>
       <main className="main-content">
         <header className="page-heading">
           <div className="topbar-leading">
-            <button className="icon-button sidebar-toggle" type="button" aria-label={sidebarCollapsed ? "Expand controls" : "Collapse controls"}
-              title={sidebarCollapsed ? "Expand controls" : "Collapse controls"}
-              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>
-              {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-            </button>
             <div className="topbar-brand-mark"><Cable size={19} strokeWidth={2} aria-hidden="true" /></div>
             <div className="topbar-titles">
               <h1>Cable Ring Optimizer</h1>
@@ -836,6 +758,56 @@ function App() {
           </div>
         </header>
 
+        <section className="plan-control-bar" aria-label="Floor plan controls">
+          <div className="plan-source-toggle" role="radiogroup" aria-label="Where does the plan come from?">
+            <label className={source === "dataset" ? "selected" : ""}>
+              <input type="radio" name="source" checked={source === "dataset"} onChange={selectDataset} />
+              <span>Dataset plan</span>
+            </label>
+            <label className={source === "file" ? "selected" : ""}>
+              <input type="radio" name="source" checked={source === "file"} onChange={selectFileSource} />
+              <span>Upload JSON</span>
+            </label>
+          </div>
+          {source === "dataset" ? (
+            <div className="plan-control-input">
+              <label className="sr-only" htmlFor="plan-index">Plan number (0 - 16999)</label>
+              <input id="plan-index" className="text-input" type="number" min="0" max="16999" step="1"
+                value={planIndex} disabled={!datasetAvailable || operation === "loading" || operation === "solving"}
+                onChange={(event) => {
+                  interruptStartup();
+                  setPlanIndex(event.target.value);
+                }}
+                onBlur={(event) => {
+                  const value = Number(planIndex);
+                  if (Number.isInteger(value) && value >= 0 && value <= 16999) {
+                    if (event.relatedTarget?.id !== "generate-button") loadIndex(value);
+                  } else setError("Plan number must be between 0 and 16999.");
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    generate();
+                  }
+                }}
+                title="Each number is a different apartment. Try 0, 2, 42, 593." />
+            </div>
+          ) : (
+            <label className="plan-file-picker">
+              <FileUp size={16} />
+              <span>Choose floor-plan JSON</span>
+              <input className="file-input" type="file" accept=".json,application/json"
+                onChange={(event) => loadFile(event.target.files?.[0])} />
+            </label>
+          )}
+          <button id="generate-button" className="primary-button" type="button" onClick={generate}
+            disabled={operation !== "" || (source === "file" && !plan) || (source === "dataset" && !datasetAvailable)}>
+            {operation === "startup" || operation === "solving"
+              ? <><Activity size={16} className="spin-icon" /> Optimizing ...</>
+              : <><Sparkles size={16} /> Generate design</>}
+          </button>
+        </section>
+
         {!plan ? (
           error ? (
             <div className="startup-error" role="alert">
@@ -845,11 +817,11 @@ function App() {
             </div>
           ) : (
             <div className="notice info-notice">
-              Upload a plan JSON file in the sidebar (e.g. inputs/PLAN_00042.json), or switch to picking a plan from the dataset.
+              Upload a plan JSON file (e.g. inputs/PLAN_00042.json), or switch to picking a plan from the dataset.
             </div>
           )
         ) : (
-          <>
+          <div className="workspace-shell">
             <section className="plan-summary">
               <div className="plan-summary-copy">
                 <span className="eyebrow">FLOOR PLAN</span>
@@ -891,7 +863,10 @@ function App() {
                     className={activeTab === "assistantAlternative" ? "active" : ""}
                     onClick={() => setActiveTab("assistantAlternative")}>Compared design</button>}
                   <button role="tab" aria-selected={activeTab === "whatif"} className={activeTab === "whatif" ? "active" : ""}
-                    onClick={() => setActiveTab("whatif")}>What-if simulator</button>
+                    onClick={() => {
+                      setDisplayMode("2d");
+                      setActiveTab("whatif");
+                    }}>What-if simulator</button>
                 </div>
                 <div className="view-switch" role="tablist" aria-label="Visualization">
                   <button role="tab" aria-selected={displayMode === "3d"} className={displayMode === "3d" ? "active" : ""}
@@ -905,15 +880,17 @@ function App() {
               </div>
             )}
 
+            <div className="workspace-layout analytics-open">
+              <section className={`visual-workspace${displayMode === "2d" ? " two-dimensional" : ""}`} aria-label="Floor plan workspace">
             {result && sceneUrl && (
-              <div className={`scene-stage ${displayMode === "3d" ? "active" : "preload"}`}>
-                {displayMode === "3d" && readySceneUrl !== sceneUrl && (
+              <div className={`scene-stage ${showSceneBackground ? "active" : "preload"}`}>
+                {showSceneBackground && readySceneUrl !== sceneUrl && (
                   <div className="scene-loading" role="status">Preparing 3D view ...</div>
                 )}
                 <iframe ref={sceneFrame} key={sceneUrl} className="plot-3d" title="Interactive 3D floor plan"
                   src={sceneUrl}
-                  aria-hidden={displayMode !== "3d"} tabIndex={displayMode === "3d" ? 0 : -1} />
-                {displayMode === "3d" && (
+                  aria-hidden={!showSceneBackground} tabIndex={showSceneBackground ? 0 : -1} />
+                {showSceneBackground && (
                   <div className="scene-floating-controls" aria-label="3D building controls">
                     <div className="floating-control-heading"><Settings2 size={14} /> BUILDING</div>
                     <label className="floating-slider" htmlFor="wall-height">
@@ -942,7 +919,13 @@ function App() {
             )}
             {operation !== "startup" && ((displayMode === "2d") || !result) && shownImage &&
               <div className="plot-frame"><img src={shownImage} alt={`${plan.plan_id} floor plan`} /></div>}
+              </section>
 
+              <section id="analytics-inspector" className="analytics-inspector"
+                aria-label="Solution analytics">
+                <div className="inspector-heading">
+                  <div><span className="eyebrow">INSPECTOR</span><h2>Analytics</h2></div>
+                </div>
             {metrics && (
               <section className="secondary-analytics" aria-label="Solution metrics and comparison">
                 <div className="secondary-section-heading">
@@ -1013,12 +996,14 @@ function App() {
             )}
 
             {activeTab === "whatif" && (
-              <WhatIfPanel options={whatIfOptions} planKey={plan.plan_key} official={output}
-                scenario={scenario} setScenario={setScenario}
-                onRun={runScenario} onReset={resetScenario} busy={operation === "scenario"}
-                scenarioResult={scenarioResult} displayMode={displayMode}
-                onDragScenario={() => setScenarioVersion((v) => v + 1)}
-                onDragReset={() => setScenarioVersion(0)} />
+              <div ref={whatIfSection} className="whatif-scroll-target">
+                <WhatIfPanel options={whatIfOptions} planKey={plan.plan_key} official={output}
+                  scenario={scenario} setScenario={setScenario}
+                  onRun={runScenario} onReset={resetScenario} busy={operation === "scenario"}
+                  scenarioResult={scenarioResult} displayMode={displayMode}
+                  onDragScenario={() => setScenarioVersion((v) => v + 1)}
+                  onDragReset={() => setScenarioVersion(0)} />
+              </div>
             )}
             {activeTab === "whatif" && displayMode === "3d" && (
               <p className="help-text">{scenarioVersion > 0
@@ -1074,7 +1059,9 @@ function App() {
                 </section>
               </>
             )}
-          </>
+              </section>
+            </div>
+          </div>
         )}
       </main>
       {plan && assistantOpen && (
