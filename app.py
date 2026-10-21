@@ -8,6 +8,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 import base64
 import copy
 import io
+import json
 import logging
 import re
 import sqlite3
@@ -53,6 +54,11 @@ results: dict[str, dict] = {}
 scenario_plans: dict[str, object] = {}      # plan_key -> plan as modified by the last what-if
 plan_history_store = PlanHistoryStore(DATA_PATH.parent / "plan_history.sqlite3")
 PLOTLY_ASSET_URL = f"/api/assets/plotly-{plotly.__version__}.js"
+DEMO_INPUTS = Path(__file__).resolve().parent / "inputs"
+
+
+def demo_plan_indices() -> list[int]:
+    return sorted(int(path.stem.removeprefix("PLAN_")) for path in DEMO_INPUTS.glob("PLAN_[0-9][0-9][0-9][0-9][0-9].json"))
 
 
 class HubMoveRequest(BaseModel):
@@ -174,8 +180,10 @@ def _register_plan(plan, input_data: dict | None = None) -> dict:
 
 @app.get("/api/status")
 def status() -> dict:
+    demos = [] if DATA_PATH.exists() else demo_plan_indices()
     return {
-        "dataset_available": DATA_PATH.exists(),
+        "dataset_available": DATA_PATH.exists() or bool(demos),
+        "demo_plan_indices": demos,
         "assistant_ai_available": conversation_ai.is_configured(),
     }
 
@@ -194,7 +202,14 @@ def dataset_plan(index: int) -> dict:
     if index < 0 or index > 16999:
         raise HTTPException(status_code=400, detail="Plan number must be between 0 and 16999.")
     if not DATA_PATH.exists():
-        raise HTTPException(status_code=404, detail="data/ResPlan.pkl not found")
+        demo_path = DEMO_INPUTS / f"PLAN_{index:05d}.json"
+        if not demo_path.is_file():
+            raise HTTPException(status_code=404, detail="This plan is not among the available demos.")
+        try:
+            input_data = json.loads(demo_path.read_text(encoding="utf-8"))
+            return _register_plan(plan_from_input_dict(input_data), input_data)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise HTTPException(status_code=400, detail=f"Could not load demo plan: {error}") from error
     try:
         dataset = load_dataset()
         plan = plan_from_index(index, dataset)

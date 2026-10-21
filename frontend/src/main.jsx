@@ -266,6 +266,7 @@ function Metric({ label, value, help, delta, deltaTone, deltaLabel, Icon, featur
 function App() {
   const [historyView, setHistoryView] = useState(() => window.location.hash === "#history");
   const [datasetAvailable, setDatasetAvailable] = useState(false);
+  const [demoPlanIndices, setDemoPlanIndices] = useState([]);
   const [assistantAiAvailable, setAssistantAiAvailable] = useState(false);
   const [source, setSource] = useState("dataset");
   const [planIndex, setPlanIndex] = useState("0");
@@ -441,6 +442,7 @@ function App() {
         const status = await api("/api/status");
         if (!isCurrent()) return;
         setDatasetAvailable(status.dataset_available);
+        setDemoPlanIndices(status.demo_plan_indices || []);
         setAssistantAiAvailable(status.assistant_ai_available);
         if (!status.dataset_available) throw new Error("The dataset is unavailable. You can still upload a plan JSON file.");
         const initialPlan = await api("/api/plans/index/0", { method: "POST" });
@@ -1020,7 +1022,16 @@ function App() {
           </div>
           {source === "dataset" ? (
             <div className="plan-control-input">
-              <label className="sr-only" htmlFor="plan-index">Plan number (0 - 16999)</label>
+              <label className="sr-only" htmlFor="plan-index">{demoPlanIndices.length ? "Demo plan" : "Plan number (0 - 16999)"}</label>
+              {demoPlanIndices.length ? (
+                <select id="plan-index" className="text-input" value={planIndex}
+                  disabled={operation === "loading" || operation === "solving"}
+                  onChange={(event) => loadIndex(Number(event.target.value))}>
+                  {demoPlanIndices.map((index) => <option key={index} value={index}>
+                    {`PLAN_${String(index).padStart(5, "0")}`}
+                  </option>)}
+                </select>
+              ) : (
               <input id="plan-index" className="text-input" type="number" min="0" max="16999" step="1"
                 value={planIndex} disabled={!datasetAvailable || operation === "loading" || operation === "solving"}
                 onChange={(event) => {
@@ -1040,6 +1051,7 @@ function App() {
                   }
                 }}
                 title="Each number is a different apartment. Try 0, 2, 42, 593." />
+              )}
             </div>
           ) : (
             <label className="plan-file-picker">
