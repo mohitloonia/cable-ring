@@ -275,6 +275,8 @@ function App() {
   const [historyPlans, setHistoryPlans] = useState([]);
   const [historySearch, setHistorySearch] = useState("");
   const [historySort, setHistorySort] = useState("recently_accessed");
+  const [historyError, setHistoryError] = useState("");
+  const historyScrollPosition = useRef(0);
   const sceneFrame = useRef(null);
   const appearanceMenu = useRef(null);
   const whatIfSection = useRef(null);
@@ -331,6 +333,7 @@ function App() {
   }
 
   async function refreshHistory() {
+    setHistoryError("");
     const response = await api(
       `/api/history?q=${encodeURIComponent(historySearch)}&sort=${historySort}`,
     );
@@ -345,13 +348,20 @@ function App() {
     return () => window.removeEventListener("hashchange", syncHistoryView);
   }, []);
 
-  function switchHistoryView(showHistory, restoreHome = true) {
+  function switchHistoryView(showHistory, restoreHome = true, restoreScroll = true) {
+    if (showHistory) historyScrollPosition.current = window.scrollY;
     const nextUrl = new URL(window.location.href);
     nextUrl.hash = showHistory ? "history" : "";
     window.history.pushState(null, "", nextUrl);
     setHistoryView(showHistory);
     setError("");
-    if (!showHistory && restoreHome && !plan && datasetAvailable) {
+    if (!showHistory && restoreScroll) {
+      const scrollPosition = historyScrollPosition.current;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        window.scrollTo(0, scrollPosition);
+      }));
+    }
+    if (!showHistory && restoreHome && !plan && datasetAvailable && operation === "") {
       planSelectionTouched.current = true;
       setSource("dataset");
       loadIndex(0);
@@ -359,14 +369,16 @@ function App() {
   }
 
   useEffect(() => {
-    if (!historyView) return undefined;
     let current = true;
     api(`/api/history?q=${encodeURIComponent(historySearch)}&sort=${historySort}`)
       .then((response) => {
-        if (current) setHistoryPlans(response.plans);
+        if (current) {
+          setHistoryPlans(response.plans);
+          setHistoryError("");
+        }
       })
       .catch((reason) => {
-        if (current) setError(reason.message);
+        if (current) setHistoryError(reason.message);
       });
     return () => {
       current = false;
@@ -430,7 +442,6 @@ function App() {
         if (!isCurrent()) return;
         setDatasetAvailable(status.dataset_available);
         setAssistantAiAvailable(status.assistant_ai_available);
-        if (window.location.hash === "#history") return;
         if (!status.dataset_available) throw new Error("The dataset is unavailable. You can still upload a plan JSON file.");
         const initialPlan = await api("/api/plans/index/0", { method: "POST" });
         if (!isCurrent()) return;
@@ -705,6 +716,7 @@ function App() {
   }
 
   async function openSavedPlan(recordId) {
+    interruptStartup();
     setError("");
     setHistoryLoading(true);
     setOperation("history");
@@ -729,11 +741,11 @@ function App() {
       setSuggestions(INITIAL_SUGGESTIONS);
       resetWhatIf();
       setActiveTab("optimized");
-      setDisplayMode("2d");
+      setDisplayMode("3d");
       setHistoryPlans((items) => items.map((item) => item.id === recordId
         ? { ...item, access_count: saved.metadata.access_count, last_accessed_at: saved.metadata.last_accessed_at }
         : item));
-      switchHistoryView(false, false);
+      switchHistoryView(false, false, false);
       await refreshHistory();
     } catch (reason) {
       setError(reason.message);
@@ -864,8 +876,9 @@ function App() {
     presentationLayout.current = null;
   }
 
-  if (historyView) {
-    return (
+  return (
+    <>
+      {historyView && (
       <div className={`history-page theme-${theme} accent-${accent}`}>
         <main className="history-page-content">
           <header className="history-page-heading">
@@ -877,7 +890,9 @@ function App() {
               Back to Optimizer
             </button>
           </header>
-          {error && <div className="notice error-notice" role="alert">{error}</div>}
+          {(historyError || error) && (
+            <div className="notice error-notice" role="alert">{historyError || error}</div>
+          )}
           <div className="history-toolbar">
             <label>
               <span className="field-label">Search by plan number, name, or ID</span>
@@ -927,11 +942,8 @@ function App() {
           </div>
         </main>
       </div>
-    );
-  }
-
-  return (
-    <div className={`app-shell theme-${theme} accent-${accent}${compact ? " compact" : ""}${presentationMode ? " presentation-mode" : ""}${activeTab === "whatif" ? " whatif-active" : ""}`}>
+      )}
+    <div className={`app-shell theme-${theme} accent-${accent}${compact ? " compact" : ""}${presentationMode ? " presentation-mode" : ""}${activeTab === "whatif" ? " whatif-active" : ""}${historyView ? " history-suspended" : ""}`}>
       <main className="main-content">
         <header className="page-heading">
           <div className="topbar-leading">
@@ -957,8 +969,10 @@ function App() {
             {presentationMode && <button className="presentation-exit" type="button" onClick={exitPresentationMode}>
               <Minimize2 size={15} /> Exit presentation
             </button>}
-            <a className="history-launcher" href={`${window.location.pathname}${window.location.search}#history`}
-              target="_blank" rel="noopener noreferrer">History</a>
+            <a className="history-launcher" href="#history" onClick={(event) => {
+              event.preventDefault();
+              switchHistoryView(true);
+            }}>History</a>
           <div className="appearance-menu" ref={appearanceMenu}>
             <button className="menu-trigger" type="button" aria-label="Appearance settings"
               aria-expanded={menuOpen} title="Appearance settings" onClick={() => setMenuOpen((open) => !open)}>
@@ -1153,7 +1167,9 @@ function App() {
               </div>
             )}
             {operation !== "startup" && ((displayMode === "2d") || !result) && shownImage &&
-              <div className="plot-frame"><img src={shownImage} alt={`${plan.plan_id} floor plan`} /></div>}
+              <div className={`plot-frame${!result ? " plan-preview" : ""}`}>
+                <img src={shownImage} alt={`${plan.plan_id} floor plan`} />
+              </div>}
               </section>
 
               <section id="analytics-inspector" className="analytics-inspector"
@@ -1360,6 +1376,7 @@ function App() {
         </section>
       )}
     </div>
+    </>
   );
 }
 
