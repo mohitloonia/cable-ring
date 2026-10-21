@@ -148,16 +148,16 @@ export function DragEditor({ planKey, official, formula, onScenario, onReset }) 
       <div className={`drag-canvas ${busy ? "busy" : ""}`}>
         <svg ref={svgRef} viewBox={viewBox} role="img" aria-label="Floor plan: drag nodes and hubs"
           onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={() => setDrag(null)}>
-          <path d={toPath(geometry.outside)} fill="#e6f2dc" stroke="#9cbf7a" strokeWidth="0.03" />
+          <path d={toPath(geometry.outside)} fill="#102331" stroke="#334155" strokeWidth="0.03" />
           {geometry.rooms.map((room) => (
             <path key={room.id} d={toPath(room.rings)} fillRule="evenodd"
-              fill={room.eligible ? color(room.id) : "#e5e5e5"} fillOpacity={room.eligible ? 0.16 : 1}
-              stroke={room.eligible ? color(room.id) : "#c4c4c4"} strokeWidth="0.03" />
+                fill={room.eligible ? color(room.id) : "#172235"} fillOpacity={room.eligible ? 0.19 : 1}
+                stroke={room.eligible ? color(room.id) : "#334155"} strokeWidth="0.03" />
           ))}
-          <path d={toPath(geometry.walls)} fillRule="evenodd" fill="#2b2b2b" />
-          <path d={toPath(geometry.windows)} fill="#4aa8ff" />
-          <path d={toPath(geometry.doors)} fill="#ff9f1c" />
-          <path d={toPath(geometry.front_door)} fill="#c1121f" />
+              <path d={toPath(geometry.walls)} fillRule="evenodd" fill="#334155" />
+              <path d={toPath(geometry.windows)} fill="#38bdf8" />
+              <path d={toPath(geometry.doors)} fill="#f59e0b" />
+              <path d={toPath(geometry.front_door)} fill="#ef4444" />
           {geometry.rooms.map((room) => (
             <text key={`t-${room.id}`} x={room.label_at[0]} y={-room.label_at[1]} className="room-label">
               {room.id} {room.type}
@@ -198,11 +198,11 @@ export function DragEditor({ planKey, official, formula, onScenario, onReset }) 
 
           {drag && (
             <g pointerEvents="none">
-              <line x1={drag.ox} y1={-drag.oy} x2={drag.x} y2={-drag.y} stroke="#111" strokeWidth="0.04" strokeDasharray="0.12 0.1" />
+              <line x1={drag.ox} y1={-drag.oy} x2={drag.x} y2={-drag.y} stroke="#f8fafc" strokeWidth="0.04" strokeDasharray="0.12 0.1" />
               {drag.kind === "node"
-                ? <circle cx={drag.x} cy={-drag.y} r="0.24" fill="#fff8" stroke="#111" strokeWidth="0.06" strokeDasharray="0.1 0.06" />
+                ? <circle cx={drag.x} cy={-drag.y} r="0.24" fill="#f8fafc88" stroke="#f8fafc" strokeWidth="0.06" strokeDasharray="0.1 0.06" />
                 : <rect x={drag.x - 0.24} y={-drag.y - 0.24} width="0.48" height="0.48" transform={`rotate(45 ${drag.x} ${-drag.y})`}
-                    fill="#fff8" stroke="#111" strokeWidth="0.06" strokeDasharray="0.1 0.06" />}
+                    fill="#f8fafc88" stroke="#f8fafc" strokeWidth="0.06" strokeDasharray="0.1 0.06" />}
               <text x={drag.x} y={-drag.y - 0.45} className="device-label">{drag.label}</text>
             </g>
           )}
