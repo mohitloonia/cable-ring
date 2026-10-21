@@ -56,13 +56,39 @@ function progressMessage(message) {
   return "Checking the current design…";
 }
 
+function formatTimestamp(value) {
+  return value
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value))
+    : "Never";
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...options.headers },
-    ...options,
-  });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.detail || "The request failed.");
+  let response;
+  try {
+    response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...options.headers },
+      ...options,
+    });
+  } catch (reason) {
+    if (reason instanceof TypeError) {
+      throw new Error("Cannot reach the Cable Ring backend. Start the API on port 8000 and keep that terminal open.");
+    }
+    throw reason;
+  }
+  const text = await response.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(response.ok
+      ? "The backend returned an invalid response."
+      : `The backend returned HTTP ${response.status}. Check that the API is running on port 8000.`);
+  }
+  if (!response.ok) {
+    const error = new Error(body.detail || "The request failed.");
+    error.status = response.status;
+    throw error;
+  }
   return body;
 }
 
@@ -238,12 +264,17 @@ function Metric({ label, value, help, delta, deltaTone, deltaLabel, Icon, featur
 }
 
 function App() {
+  const [historyView, setHistoryView] = useState(() => window.location.hash === "#history");
   const [datasetAvailable, setDatasetAvailable] = useState(false);
   const [assistantAiAvailable, setAssistantAiAvailable] = useState(false);
   const [source, setSource] = useState("dataset");
   const [planIndex, setPlanIndex] = useState("0");
+  const planSelectionTouched = useRef(false);
   const [plan, setPlan] = useState(null);
   const [result, setResult] = useState(null);
+  const [historyPlans, setHistoryPlans] = useState([]);
+  const [historySearch, setHistorySearch] = useState("");
+  const [historySort, setHistorySort] = useState("recently_accessed");
   const sceneFrame = useRef(null);
   const appearanceMenu = useRef(null);
   const whatIfSection = useRef(null);
@@ -282,6 +313,8 @@ function App() {
   const [scenario, setScenario] = useState(defaultScenario());
   const [scenarioResult, setScenarioResult] = useState(null);
   const [scenarioVersion, setScenarioVersion] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyActionBusy, setHistoryActionBusy] = useState(false);
   const sceneVariant = activeTab === "baseline"
     ? "&baseline=true"
     : activeTab === "whatif" && scenarioVersion > 0 ? `&scenario=true&v=${scenarioVersion}` : "";
@@ -296,6 +329,49 @@ function App() {
     setScenario(defaultScenario());
     setScenarioVersion(0);
   }
+
+  async function refreshHistory() {
+    const response = await api(
+      `/api/history?q=${encodeURIComponent(historySearch)}&sort=${historySort}`,
+    );
+    setHistoryPlans(response.plans);
+  }
+
+  useEffect(() => {
+    function syncHistoryView() {
+      setHistoryView(window.location.hash === "#history");
+    }
+    window.addEventListener("hashchange", syncHistoryView);
+    return () => window.removeEventListener("hashchange", syncHistoryView);
+  }, []);
+
+  function switchHistoryView(showHistory, restoreHome = true) {
+    const nextUrl = new URL(window.location.href);
+    nextUrl.hash = showHistory ? "history" : "";
+    window.history.pushState(null, "", nextUrl);
+    setHistoryView(showHistory);
+    setError("");
+    if (!showHistory && restoreHome && !plan && datasetAvailable) {
+      planSelectionTouched.current = true;
+      setSource("dataset");
+      loadIndex(0);
+    }
+  }
+
+  useEffect(() => {
+    if (!historyView) return undefined;
+    let current = true;
+    api(`/api/history?q=${encodeURIComponent(historySearch)}&sort=${historySort}`)
+      .then((response) => {
+        if (current) setHistoryPlans(response.plans);
+      })
+      .catch((reason) => {
+        if (current) setError(reason.message);
+      });
+    return () => {
+      current = false;
+    };
+  }, [historyView, historySearch, historySort]);
 
   function resetViewerSettings() {
     setWallHeight(1.5);
@@ -354,6 +430,7 @@ function App() {
         if (!isCurrent()) return;
         setDatasetAvailable(status.dataset_available);
         setAssistantAiAvailable(status.assistant_ai_available);
+        if (window.location.hash === "#history") return;
         if (!status.dataset_available) throw new Error("The dataset is unavailable. You can still upload a plan JSON file.");
         const initialPlan = await api("/api/plans/index/0", { method: "POST" });
         if (!isCurrent()) return;
@@ -593,18 +670,108 @@ function App() {
         resetWhatIf();
       }
       if (!activePlan) return;
+      if (source === "dataset") {
+        let savedPlan;
+        try {
+          savedPlan = await api(
+            `/api/history/by-building/${encodeURIComponent(activePlan.plan_id)}`,
+          );
+        } catch (reason) {
+          if (reason.status !== 404) throw reason;
+        }
+        if (savedPlan) {
+          await openSavedPlan(savedPlan.id);
+          return;
+        }
+      }
       const solved = await api("/api/solve", {
         method: "POST",
-        body: JSON.stringify({ plan_key: activePlan.plan_key, ...settings }),
+        body: JSON.stringify({
+          plan_key: activePlan.plan_key,
+          generation_id: crypto.randomUUID(),
+          ...settings,
+        }),
       });
       setResult(solved);
       resetWhatIf();
       setActiveTab("optimized");
       setDisplayMode("3d");
+      await refreshHistory();
     } catch (reason) {
       setError(reason.message);
     } finally {
       setOperation("");
+    }
+  }
+
+  async function openSavedPlan(recordId) {
+    setError("");
+    setHistoryLoading(true);
+    setOperation("history");
+    try {
+      const saved = await api(`/api/history/${encodeURIComponent(recordId)}`);
+      setPlan(saved.plan);
+      setResult(saved.result);
+      const sourceMetadata = saved.metadata.metadata?.source || {};
+      setSource(sourceMetadata.dataset ? "dataset" : "file");
+      if (Number.isInteger(sourceMetadata.index)) setPlanIndex(String(sourceMetadata.index));
+      const generationSettings = saved.metadata.metadata?.generation_settings || {};
+      setSettings((current) => ({
+        ...current,
+        max_nodes: generationSettings.max_nodes ?? current.max_nodes,
+        node_mode: generationSettings.node_mode ?? current.node_mode,
+        zone_via_other_rooms: generationSettings.zone_via_other_rooms ?? current.zone_via_other_rooms,
+        time_budget_s: generationSettings.time_budget_s ?? current.time_budget_s,
+        compare: saved.result.baseline !== null,
+      }));
+      setChatMessages([]);
+      setAssistantInput("");
+      setSuggestions(INITIAL_SUGGESTIONS);
+      resetWhatIf();
+      setActiveTab("optimized");
+      setDisplayMode("2d");
+      setHistoryPlans((items) => items.map((item) => item.id === recordId
+        ? { ...item, access_count: saved.metadata.access_count, last_accessed_at: saved.metadata.last_accessed_at }
+        : item));
+      switchHistoryView(false, false);
+      await refreshHistory();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setHistoryLoading(false);
+      setOperation("");
+    }
+  }
+
+  async function renameSavedPlan(item) {
+    const name = window.prompt("Rename saved plan", item.name);
+    if (name === null) return;
+    setError("");
+    try {
+      setHistoryActionBusy(true);
+      await api(`/api/history/${encodeURIComponent(item.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      });
+      await refreshHistory();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setHistoryActionBusy(false);
+    }
+  }
+
+  async function deleteSavedPlan(item) {
+    if (!window.confirm(`Delete “${item.name}” from saved plans? This cannot be undone.`)) return;
+    setError("");
+    try {
+      setHistoryActionBusy(true);
+      await api(`/api/history/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      await refreshHistory();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setHistoryActionBusy(false);
     }
   }
 
@@ -697,6 +864,72 @@ function App() {
     presentationLayout.current = null;
   }
 
+  if (historyView) {
+    return (
+      <div className={`history-page theme-${theme} accent-${accent}`}>
+        <main className="history-page-content">
+          <header className="history-page-heading">
+            <div>
+              <h1>Plan History</h1>
+              <p>Recently opened plans appear first. Use Sort plans to view creation order.</p>
+            </div>
+            <button className="primary-button" type="button" onClick={() => switchHistoryView(false)}>
+              Back to Optimizer
+            </button>
+          </header>
+          {error && <div className="notice error-notice" role="alert">{error}</div>}
+          <div className="history-toolbar">
+            <label>
+              <span className="field-label">Search by plan number, name, or ID</span>
+              <input className="text-input" type="search"
+                placeholder="e.g. 42 or PLAN_00042"
+                value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} />
+            </label>
+            <label>
+              <span className="field-label">Sort plans</span>
+              <select className="text-input" value={historySort}
+                onChange={(event) => setHistorySort(event.target.value)}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="recently_accessed">Recently accessed</option>
+              </select>
+            </label>
+          </div>
+          {historyLoading && <p className="muted">Opening saved plan…</p>}
+          {!historyPlans.length && !error && <p className="muted">No saved plans found.</p>}
+          <div className="history-page-list">
+            {historyPlans.map((item) => (
+              <article className="history-card" key={item.id}>
+                <strong className="history-name">{item.name}</strong>
+                <span className="history-id" title={item.id}>ID {item.id}</span>
+                <span className="history-detail">{item.building_ref} · {item.metrics.hub_count ?? "—"} hubs</span>
+                <span className="history-detail">
+                  J {item.metrics.cost_J ?? "—"} · {item.metrics.total_length_m ?? "—"} m cable ·
+                  {" "}{item.metrics.crossings ?? "—"} crossings
+                </span>
+                <span className="history-detail">Created {formatTimestamp(item.created_at)}</span>
+                <span className="history-detail">
+                  Last opened {formatTimestamp(item.last_accessed_at)} · {item.access_count} opens
+                </span>
+                <div className="history-actions">
+                  <button type="button" onClick={() => openSavedPlan(item.id)} disabled={historyLoading || historyActionBusy}>
+                    Open Plan
+                  </button>
+                  <button type="button" onClick={() => renameSavedPlan(item)} disabled={historyLoading || historyActionBusy}>
+                    Rename
+                  </button>
+                  <button type="button" onClick={() => deleteSavedPlan(item)} disabled={historyLoading || historyActionBusy}>
+                    Delete
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className={`app-shell theme-${theme} accent-${accent}${compact ? " compact" : ""}${presentationMode ? " presentation-mode" : ""}${activeTab === "whatif" ? " whatif-active" : ""}`}>
       <main className="main-content">
@@ -724,6 +957,8 @@ function App() {
             {presentationMode && <button className="presentation-exit" type="button" onClick={exitPresentationMode}>
               <Minimize2 size={15} /> Exit presentation
             </button>}
+            <a className="history-launcher" href={`${window.location.pathname}${window.location.search}#history`}
+              target="_blank" rel="noopener noreferrer">History</a>
           <div className="appearance-menu" ref={appearanceMenu}>
             <button className="menu-trigger" type="button" aria-label="Appearance settings"
               aria-expanded={menuOpen} title="Appearance settings" onClick={() => setMenuOpen((open) => !open)}>
@@ -753,8 +988,8 @@ function App() {
                   <span>Compact layout</span>
                 </label>
               </div>
-            )}
-          </div>
+              )}
+            </div>
           </div>
         </header>
 

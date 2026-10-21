@@ -62,6 +62,17 @@ cable-ring/
 └── outputs/               results (not in git)
 ```
 
+## Saved plan history
+
+Every successfully validated generation is saved to the shared SQLite database
+at `data/plan_history.sqlite3`. The database is created when the backend starts
+and survives browser refreshes and backend restarts. The **History** button opens
+the shared saved-plan list in a separate tab, with search, sorting, opening the
+original result, renaming, and deleting.
+Opening a saved plan restores its stored output and does not rerun optimization.
+History is shared by all visitors to this backend; access counts are aggregate,
+with no user tracking or login.
+
 ## Natural-language design assistant
 
 After loading a plan and pressing **Generate**, use the assistant in the main

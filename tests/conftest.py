@@ -11,6 +11,18 @@ from cablering.config import DATA_PATH, Config  # noqa: E402
 from cablering.model import Plan, Room  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolate_plan_history(tmp_path, monkeypatch):
+    import app
+    from cablering.plan_history import PlanHistoryStore
+
+    monkeypatch.setattr(
+        app,
+        "plan_history_store",
+        PlanHistoryStore(tmp_path / "plan-history.sqlite3"),
+    )
+
+
 @pytest.fixture
 def cfg():
     return Config()
